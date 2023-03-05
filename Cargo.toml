@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "omnipaxos_server",
+    "omnipaxos_client"
+]
