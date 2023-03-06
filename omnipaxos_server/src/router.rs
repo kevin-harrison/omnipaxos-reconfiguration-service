@@ -26,9 +26,9 @@ type FramedServer = Framed<
 >;
 
 struct Router {
-    clients: HashMap<NodeId, FramedServer>,
+    nodes: HashMap<NodeId, FramedServer>,
     listener: TcpListener,
-    pending_clients: Vec<FramedServer>
+    pending_nodes: Vec<FramedServer>
 }
 
 impl Router {
@@ -36,20 +36,28 @@ impl Router {
         let listener = TcpListener::bind(addr).await?;
 
         Ok(Self {
-            clients: HashMap::new(),
+            nodes: HashMap::new(),
             listener,
-            pending_clients: vec![]
+            pending_nodes: vec![]
         })
     }
     
     pub async fn send_message(&mut self, node: NodeId, msg: Message<KeyValue, KVSnapshot>) -> Result<(), Error> {
-        if let Some(connection) = self.clients.get_mut(&node) { 
+        if let Some(connection) = self.nodes.get_mut(&node) { 
             connection.send(json!(msg)).await?;
         } else {
             return Err(anyhow!("Node `{}` not connected!", node));
         }
-
         Ok(())
+    }
+
+    pub async fn add_connection(&mut self, node: NodeId, address: &str) {
+        let socket = TcpStream::connect(address).await.unwrap(); 
+        let length_delimited =
+            CodecFramed::new(socket, LengthDelimitedCodec::new());
+        // Serialize frames with JSON
+        let framed = Framed::new(length_delimited, Json::default()); 
+        self.nodes.insert(node, framed);
     }
 }
 
@@ -67,7 +75,7 @@ impl Stream for Router {
                         CodecFramed::new(tcp_stream, LengthDelimitedCodec::new());
                     // Serialize frames with JSON
                     let framed = Framed::new(length_delimited, Json::default()); 
-                    self_mut.pending_clients.push(framed);
+                    self_mut.pending_nodes.push(framed);
                 }
                 Err(err) => {
                     error!("Error checking for new requests:{:?}", err);
@@ -76,10 +84,10 @@ impl Stream for Router {
             }
         }
 
-
+        /*
         let mut new_pending = Vec::new();
 
-        mem::swap(&mut self_mut.pending_clients, &mut new_pending);
+        mem::swap(&mut self_mut.pending_nodes, &mut new_pending);
 
         for mut pending in new_pending.into_iter() {
             if let Poll::Ready(val) = Pin::new(&mut pending).poll_next(cx) {
@@ -87,7 +95,7 @@ impl Stream for Router {
                     Some(Ok(ServerMessage::Hello(name))) => {
                         debug!("New Client connection from `{}`", name);
                         self_mut.buffer.push(ServerMessage::Hello(name.clone()));
-                        self_mut.clients.insert(name, pending);
+                        self_mut.nodes.insert(name, pending);
                     }
                     Some(Ok(msg)) => {
                         warn!("Received unknown message during handshake:{:?}", msg);
@@ -98,21 +106,22 @@ impl Stream for Router {
                     None => (),
                 }
             } else {
-                self_mut.pending_clients.push(pending);
+                self_mut.pending_nodes.push(pending);
             }
         }
+        */
 
 
-        let mut new_clients = HashMap::new();
+        let mut new_nodes = HashMap::new();
 
-        mem::swap(&mut self_mut.clients, &mut new_clients);
+        mem::swap(&mut self_mut.nodes, &mut new_nodes);
 
-        for (name, mut client) in new_clients.into_iter() {
+        for (name, mut client) in new_nodes.into_iter() {
             match Pin::new(&mut client).poll_next(cx) {
                 Poll::Ready(Some(Ok(val))) => {
                     trace!("Received message from `{}`: {:?}", name, val);
                     self_mut.buffer.push(val);
-                    self_mut.clients.insert(name, client);
+                    self_mut.nodes.insert(name, client);
                 }
                 Poll::Ready(None) => {
                     //Finished
@@ -123,7 +132,7 @@ impl Stream for Router {
                     error!("Error from `{}`: {} Removing connection.", name, err);
                 }
                 Poll::Pending => {
-                    self_mut.clients.insert(name, client);
+                    self_mut.nodes.insert(name, client);
                 }
             }
         }
