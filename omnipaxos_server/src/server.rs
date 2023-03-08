@@ -1,4 +1,4 @@
-use omnipaxos_core::{messages::Message, util::NodeId, omni_paxos::OmniPaxosConfig};
+use omnipaxos_core::{messages::{Message, sequence_paxos::PaxosMessage}, util::NodeId, omni_paxos::OmniPaxosConfig};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -6,7 +6,10 @@ use std::{
 
 use tokio::{sync::mpsc, time};
 use tokio::net::TcpStream;
+use futures::StreamExt;
+use log::*;
 
+use crate::{router::Router, message::NodeMessage::*};
 
 pub struct OmniPaxosServer {
     //pub omni_paxos: Arc<Mutex<OmniPaxosKV>>,
@@ -26,9 +29,22 @@ impl OmniPaxosServer {
 
     
     pub(crate) async fn run(self) {
-        let addr: String = "test".to_string();
+        
 
 
+        let addr = "127.0.0.1:3000";
+        let mut router: Router = Router::new(addr).await.unwrap();
+        
+        while let Some(node_msg) = router.next().await {
+            match node_msg {
+                Ok(OmniPaxosMessage(msg)) => (),
+                Ok(Hello(id)) => (),
+                Err(err) => {
+                    warn!("Could not deserialize message:{}", err);
+                }
+            }
+        }
+        /*
         // sender / receiver - for data received from the server
         let (from_tcp_sr, from_tcp_rr) = mpsc::channel(100);
 
@@ -39,18 +55,19 @@ impl OmniPaxosServer {
         let work = tokio::spawn(OmniPaxosServer::process(to_tcp_sr, from_tcp_rr));
 
         // spawn a connector
-        for &node_id in self.addresses.keys() {
+        for node_id in self.addresses.keys() {
               
-            tokio::spawn(OmniPaxosServer::connect(from_tcp_sr, to_tcp_rr, Arc::new(Mutex::new(self.addresses)), node_id));
         }
+        let tcp = tokio::spawn(OmniPaxosServer::connect(from_tcp_sr, to_tcp_rr, Arc::new(Mutex::new(self.addresses)), 2));
 
         // listen for an interruption
-        //tokio::signal::ctrl_c().await;
+        tokio::signal::ctrl_c().await;
         // before exiting
-        //work.abort();
-        //tcp.abort();
-        
+        work.abort();
+        tcp.abort();
+        */
     }
+
 
     async fn process(sender_to_tcp: mpsc::Sender<Data>, 
                      receiver_from_tcp: mpsc::Receiver<Data>) {

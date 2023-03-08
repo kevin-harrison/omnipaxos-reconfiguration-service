@@ -40,7 +40,7 @@ pub async fn main() {
     let storage = MemoryStorage::<KeyValue, ()>::default();
     let mut omni_paxos = omnipaxos_config.build(storage);
    
-    // doesn't add message to outgoing_messages because we haven't elected a leader yet
+    // doesn't add message to outgoing_messages because we haven't elected a leader yet;
     let write_entry = KeyValue { key: String::from("a"), value: 123 };
     omni_paxos.append(write_entry).expect("Failed to append");
     std::thread::sleep(std::time::Duration::from_millis(50));
