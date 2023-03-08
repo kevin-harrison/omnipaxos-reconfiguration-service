@@ -23,7 +23,9 @@ use crate::{
 mod server;
 mod router;
 mod kv;
+mod message;
 
+use uuid::Uuid;
 #[tokio::main]
 pub async fn main() {
 
