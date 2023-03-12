@@ -1,37 +1,37 @@
-use omnipaxos_core::{messages::{Message, sequence_paxos::PaxosMessage}, util::NodeId, omni_paxos::OmniPaxosConfig};
+// Log replication layer (copied from omnipaxos/example/kv_store) 
+use crate::kv::{KVSnapshot, KeyValue};
+use omnipaxos_core::{messages::Message, util::NodeId};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
 
+use crate::{
+    util::{ELECTION_TIMEOUT, OUTGOING_MESSAGE_PERIOD},
+    MessageKV,
+    OmniPaxosKV,
+};
 use tokio::{sync::mpsc, time};
+
+// Service layer
 use tokio::net::TcpStream;
 use futures::StreamExt;
 use log::*;
 
-use crate::{router::Router, message::NodeMessage::*};
+use crate::{
+    router::Router,
+    message::NodeMessage::*,
+};
 
 pub struct OmniPaxosServer {
-    //pub omni_paxos: Arc<Mutex<OmniPaxosKV>>,
+    pub omnipaxos: Arc<Mutex<OmniPaxosKV>>,
     // pub incoming: mpsc::Receiver<Message<KeyValue, KVSnapshot>>,
-    //pub outgoing: HashMap<NodeId, mpsc::Sender<Message<KeyValue, KVSnapshot>>>,
-    addresses: HashMap<NodeId, String>,
-    configs: Vec<OmniPaxosConfig>,
-
+    // pub outgoing: HashMap<NodeId, mpsc::Sender<Message<KeyValue, KVSnapshot>>>,
+    pub addresses: HashMap<NodeId, String>,
 }
 
-struct Data;
-
 impl OmniPaxosServer {
-    pub fn new(config: OmniPaxosConfig, addresses: HashMap<NodeId, String>) -> Self {
-       OmniPaxosServer { addresses, configs: vec![config] }
-    }
-
-    
     pub(crate) async fn run(self) {
-        
-
-
         let addr = "127.0.0.1:3000";
         let mut router: Router = Router::new(addr).await.unwrap();
         
@@ -69,8 +69,8 @@ impl OmniPaxosServer {
     }
 
 
-    async fn process(sender_to_tcp: mpsc::Sender<Data>, 
-                     receiver_from_tcp: mpsc::Receiver<Data>) {
+    async fn process(sender_to_tcp: mpsc::Sender<MessageKV>, 
+                     receiver_from_tcp: mpsc::Receiver<MessageKV>) {
 
         // use tokio::select!
 
@@ -80,8 +80,8 @@ impl OmniPaxosServer {
         // in a loop
     }
 
-    async fn connect(sender_to_worker: mpsc::Sender<Data>, 
-                     receiver_from_worker: mpsc::Receiver<Data>,
+    async fn connect(sender_to_worker: mpsc::Sender<MessageKV>, 
+                     receiver_from_worker: mpsc::Receiver<MessageKV>,
                      addresses: Arc<Mutex<HashMap<NodeId, String>>>,
                      id: NodeId) {
 
