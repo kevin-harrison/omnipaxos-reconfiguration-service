@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 use crate::kv::{KVSnapshot, KeyValue};
-use omnipaxos_core::{util::NodeId, messages::Message};
+use omnipaxos_core::{util::{NodeId, ConfigurationId}, messages::Message};
 
-pub type ClientId = u64;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum NodeMessage {
