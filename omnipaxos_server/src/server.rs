@@ -1,49 +1,85 @@
-use omnipaxos_core::{messages::{Message, sequence_paxos::PaxosMessage}, util::NodeId, omni_paxos::OmniPaxosConfig};
+use omnipaxos_core::{messages::{Message, sequence_paxos::PaxosMessage}, util::NodeId, omni_paxos::{OmniPaxosConfig, OmniPaxos}};
+use omnipaxos_storage::memory_storage::MemoryStorage;
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex}, net::SocketAddr,
 };
 
 use tokio::{sync::mpsc, time};
 use tokio::net::TcpStream;
 use futures::StreamExt;
 use log::*;
+use anyhow::{anyhow, Error};
 
-use crate::{router::Router, message::NodeMessage::*};
+use crate::{
+    router::Router, 
+    message::NodeMessage::{*, self}, 
+    kv::{KeyValue, KVSnapshot},
+    util::{ELECTION_TIMEOUT, OUTGOING_MESSAGE_PERIOD},
+};
 
 pub struct OmniPaxosServer {
-    //pub omni_paxos: Arc<Mutex<OmniPaxosKV>>,
+    address: SocketAddr,
+    addresses: HashMap<NodeId, SocketAddr>,
+    router: Router,
+
+    pub omni_paxos: Arc<Mutex<OmniPaxosKV>>,
     // pub incoming: mpsc::Receiver<Message<KeyValue, KVSnapshot>>,
     //pub outgoing: HashMap<NodeId, mpsc::Sender<Message<KeyValue, KVSnapshot>>>,
-    addresses: HashMap<NodeId, String>,
     configs: Vec<OmniPaxosConfig>,
 
 }
 
-struct Data;
+type OmniPaxosKV = OmniPaxos<KeyValue, KVSnapshot, MemoryStorage<KeyValue, KVSnapshot>>;
 
 impl OmniPaxosServer {
-    pub fn new(config: OmniPaxosConfig, addresses: HashMap<NodeId, String>) -> Self {
-       OmniPaxosServer { addresses, configs: vec![config] }
+    pub async fn new(address: SocketAddr, addresses: HashMap<NodeId, SocketAddr>, config: OmniPaxosConfig) -> Self {
+        let omni_paxos: Arc<Mutex<OmniPaxosKV>> =
+            Arc::new(Mutex::new(config.build(MemoryStorage::default())));
+        let router: Router = Router::new(address, addresses.clone()).await.unwrap();
+        OmniPaxosServer { address, addresses, router, omni_paxos, configs: vec![] }
+    }
+
+    async fn handle_incoming_msgs(&mut self, in_msg: Result<NodeMessage, Error>) {
+        match in_msg {
+            Ok(OmniPaxosMessage(msg)) => {
+                self.omni_paxos.lock().unwrap().handle_incoming(msg);
+            },
+            Ok(Hello(_)) => (),
+            Err(err) => {
+                warn!("Could not deserialize message:{}", err);
+            }
+        }
+    }
+
+    async fn send_outgoing_msgs(&mut self) {
+        let messages = self.omni_paxos.lock().unwrap().outgoing_messages();
+        for msg in messages {
+            let receiver = msg.get_receiver();
+            debug!("Sending to {}: {:?}", receiver, msg);
+            match self.router.send_message(receiver, OmniPaxosMessage(msg)).await {
+                Err(err) => error!("error sending message, {}", err),
+                _ => ()
+            }
+        }
     }
 
     
-    pub(crate) async fn run(self) {
-        
+    pub(crate) async fn run(&mut self) { 
+        debug!("Starting loop");
+        let mut outgoing_interval = time::interval(OUTGOING_MESSAGE_PERIOD);
+        let mut election_interval = time::interval(ELECTION_TIMEOUT);
+        loop {
+            tokio::select! {
+                biased;
 
-
-        let addr = "127.0.0.1:3000";
-        let mut router: Router = Router::new(addr).await.unwrap();
-        
-        while let Some(node_msg) = router.next().await {
-            match node_msg {
-                Ok(OmniPaxosMessage(msg)) => (),
-                Ok(Hello(id)) => (),
-                Err(err) => {
-                    warn!("Could not deserialize message:{}", err);
-                }
+                _ = election_interval.tick() => { self.omni_paxos.lock().unwrap().election_timeout(); },
+                _ = outgoing_interval.tick() => { self.send_outgoing_msgs().await; },
+                Some(in_msg) = self.router.next() => { self.handle_incoming_msgs(in_msg).await; },
+                else => { }
             }
         }
+
         /*
         // sender / receiver - for data received from the server
         let (from_tcp_sr, from_tcp_rr) = mpsc::channel(100);
@@ -68,7 +104,7 @@ impl OmniPaxosServer {
         */
     }
 
-
+    /*
     async fn process(sender_to_tcp: mpsc::Sender<Data>, 
                      receiver_from_tcp: mpsc::Receiver<Data>) {
 
@@ -111,5 +147,6 @@ impl OmniPaxosServer {
             else {break;}
         }
     }
+    */
     
 }

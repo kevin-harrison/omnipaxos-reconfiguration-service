@@ -1,9 +1,13 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex}, net::SocketAddr,
+    env
 };
+use env_logger;
+
 
 use futures::prelude::*;
+use router::Router;
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio_serde::formats::*;
@@ -15,31 +19,36 @@ use omnipaxos_core::{
     util::{LogEntry, NodeId},
 };
 use crate::{
-    //kv::{KVSnapshot, KeyValue},
     server::OmniPaxosServer,
-    //util::*,
 };
+
+
 
 mod server;
 mod router;
 mod kv;
 mod message;
+mod util;
 
-use uuid::Uuid;
 #[tokio::main]
 pub async fn main() {
-
+    env_logger::init();
+    let args: Vec<String> = env::args().collect();
+    let listen_address: SocketAddr = args[1].parse().expect("Unable to parse socket address");
+    let addresses = HashMap::<NodeId, SocketAddr>::from([(1, SocketAddr::from(([127,0,0,1], 8000))), (2, SocketAddr::from(([127,0,0,1], 8001)))]);
+    let id: NodeId = args[2].parse().expect("Unable to parse node ID");
+    let peers = [1,2].iter().filter(|&&p| p != id).copied().collect();
 
     let config = OmniPaxosConfig {
-        pid: 1,
+        pid: id,
         configuration_id: 1,
-        peers: vec![2],
+        peers,
         ..Default::default()
     };
-    let mut addresses = HashMap::<NodeId, String>::from([(1, "127.0.0.1:3000".to_string()), (2, "127.0.0.1:3001".to_string())]);
-    let server = OmniPaxosServer::new(config, addresses);
+    let mut server = OmniPaxosServer::new(listen_address, addresses, config).await;
+    server.run().await;
 
-
+    /*
     // Bind a server socket
     let listener = TcpListener::bind("127.0.0.1:17653").await.unwrap();
 
@@ -66,4 +75,5 @@ pub async fn main() {
             }
         });
     }
+    */
 }

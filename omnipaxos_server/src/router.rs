@@ -1,12 +1,10 @@
-use std::net::SocketAddr;
-use std::{collections::HashMap};
 use futures::{SinkExt, Stream};
 use serde_json::{json, Value};
-use tokio::net::{TcpStream, TcpListener};
+use tokio::net::{TcpStream, TcpListener, TcpSocket};
 use tokio_serde::{formats::{Json, Cbor}, Framed};
 use tokio_util::codec::{Framed as CodecFramed, LengthDelimitedCodec};
 use anyhow::{anyhow, Error};
-use std::pin::Pin;
+use std::{pin::Pin, collections::HashMap, net::SocketAddr};
 use std::task::{Context, Poll};
 
 use omnipaxos_core::{util::NodeId, messages::Message};
@@ -36,17 +34,19 @@ type NodeConnection = Framed<
 pub struct Router {
     listener: TcpListener,
     nodes: HashMap<NodeId, NodeConnection>,
+    node_addresses: HashMap<NodeId, SocketAddr>,
     pending_nodes: Vec<NodeConnection>,
     buffer: Vec<NodeMessage>
 }
 
 impl Router {
-    pub async fn new(addr: &str) -> Result<Self, Error> {
+    pub async fn new(addr: SocketAddr, addresses: HashMap<NodeId, SocketAddr>) -> Result<Self, Error> {
         let listener = TcpListener::bind(addr).await?;
 
         Ok(Self {
             listener,
             nodes: HashMap::new(),
+            node_addresses: addresses,
             pending_nodes: vec![],
             buffer: vec![]
         })
@@ -56,17 +56,41 @@ impl Router {
         if let Some(connection) = self.nodes.get_mut(&node) { 
             connection.send(msg).await?;
         } else {
+            // No connection to node so if heartbeat message try to reconnect then send
+            if let NodeMessage::OmniPaxosMessage(omnipaxos_core::messages::Message::BLE(_)) = msg {
+                debug!("Trying to reconnect to node");
+                self.add_node(node).await?;
+                self.nodes.get_mut(&node).unwrap().send(msg).await?; // TODO: Need to called
+                                                                         // reconnected on
+                                                                         // reconnects 
+            }
             return Err(anyhow!("Node `{}` not connected!", node));
         }
         Ok(())
     }
 
-    pub async fn add_connection(&mut self, node: NodeId, address: &str) -> Result<(), Error> {
-        let tcp_stream = TcpStream::connect(address).await?; 
-        let length_delimited = CodecFramed::new(tcp_stream, LengthDelimitedCodec::new());
-        let framed = Framed::new(length_delimited, Cbor::default());
-        self.pending_nodes.push(framed);
-        Ok(())
+    async fn add_node(&mut self, node: NodeId) -> Result<(), Error> {
+        if let Some(address) = self.node_addresses.get(&node) {
+            //let socket = TcpSocket::new_v4()?;
+            //socket.bind(self.listener.local_addr()?)?;
+            let tcp_stream = self.listener.connect(*address).await?; 
+            let length_delimited = CodecFramed::new(tcp_stream, LengthDelimitedCodec::new());
+            let framed = Framed::new(length_delimited, Cbor::default());
+            self.nodes.insert(node, framed);
+            return Ok(());
+        }
+        Err(anyhow!("No known address for node {}", node))
+    }
+    
+    fn add_connection(&mut self, socket: TcpStream, address: SocketAddr) -> Result<(), Error> {
+        let node_id = self.node_addresses.iter().find_map(|(id, addr)| if *addr == address {Some(id)} else {None});
+        if let Some(&id) = node_id {
+            let length_delimited = CodecFramed::new(socket, LengthDelimitedCodec::new());
+            let framed = Framed::new(length_delimited, Cbor::default());
+            self.nodes.insert(id, framed);
+            return Ok(());
+        }
+        Err(anyhow!("No known node for address {}", address))
     }
 }
 
@@ -80,9 +104,10 @@ impl Stream for Router {
         if let Poll::Ready(val) = Pin::new(&mut self_mut.listener).poll_accept(cx) {
             match val {
                 Ok((tcp_stream, socket_addr)) => {
-                    let length_delimited = CodecFramed::new(tcp_stream, LengthDelimitedCodec::new());
-                    let framed = Framed::new(length_delimited, Cbor::default());
-                    self_mut.pending_nodes.push(framed);
+                    match self_mut.add_connection(tcp_stream, socket_addr) {
+                        Err(err) => error!("Error adding new connection:{:?}", err),
+                        _ => debug!("CONNECTED TO {}", socket_addr),
+                    }
                 }
                 Err(err) => {
                     error!("Error checking for new requests:{:?}", err);
@@ -91,7 +116,7 @@ impl Stream for Router {
             }
         }
 
-        
+        /* 
         let mut new_pending = Vec::new();
 
         mem::swap(&mut self_mut.pending_nodes, &mut new_pending);
@@ -116,6 +141,7 @@ impl Stream for Router {
                 self_mut.pending_nodes.push(pending);
             }
         }
+        */
 
 
         let mut new_nodes = HashMap::new();
