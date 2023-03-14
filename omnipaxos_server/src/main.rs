@@ -33,47 +33,21 @@ mod util;
 #[tokio::main]
 pub async fn main() {
     env_logger::init();
+    
+    // Server config
     let args: Vec<String> = env::args().collect();
-    let listen_address: SocketAddr = args[1].parse().expect("Unable to parse socket address");
-    let addresses = HashMap::<NodeId, SocketAddr>::from([(1, SocketAddr::from(([127,0,0,1], 8000))), (2, SocketAddr::from(([127,0,0,1], 8001)))]);
-    let id: NodeId = args[2].parse().expect("Unable to parse node ID");
+    let id: NodeId = args[1].parse().expect("Unable to parse node ID");
     let peers = [1,2].iter().filter(|&&p| p != id).copied().collect();
-
+    let addresses = HashMap::<NodeId, SocketAddr>::from([(1, SocketAddr::from(([127,0,0,1], 8000))), (2, SocketAddr::from(([127,0,0,1], 8001))), (3, SocketAddr::from(([127,0,0,1], 8002)))]);
+    let listen_address: SocketAddr = addresses.get(&id).unwrap().clone();
     let config = OmniPaxosConfig {
         pid: id,
         configuration_id: 1,
         peers,
         ..Default::default()
     };
+
+    // Start server
     let mut server = OmniPaxosServer::new(listen_address, addresses, config).await;
     server.run().await;
-
-    /*
-    // Bind a server socket
-    let listener = TcpListener::bind("127.0.0.1:17653").await.unwrap();
-
-    println!("listening on {:?}", listener.local_addr());
-
-    loop {
-        let (socket, _) = listener.accept().await.unwrap();
-
-        // Delimit frames using a length header
-        let length_delimited = FramedRead::new(socket, LengthDelimitedCodec::new());
-
-        // Deserialize frames
-        let mut json_frame = tokio_serde::SymmetricallyFramed::new(
-            length_delimited,
-            SymmetricalJson::<Value>::default(),
-        );
-
-        // Spawn a task that prints all received messages to STDOUT
-        tokio::spawn(async move {
-            while let Some(msg) = json_frame.try_next().await.unwrap() {
-                println!("GOT: {:?}", msg);
-                let p: Message<(), ()> = serde_json::from_value(msg).unwrap();
-                println!("PARSED AS: {:?}", p)
-            }
-        });
-    }
-    */
 }

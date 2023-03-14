@@ -1,72 +1,53 @@
 use futures::prelude::*;
 use serde::{Serialize, Deserialize};
-use serde_json::json;
+use std::env;
+
 use tokio::net::TcpStream;
-use tokio_serde::formats::*;
-use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
+use tokio_serde::{formats::Cbor, Framed};
+use tokio_util::codec::{Framed as CodecFramed, LengthDelimitedCodec};
 
-use omnipaxos_core::{
-    omni_paxos::{OmniPaxos, OmniPaxosConfig},
-};
-use omnipaxos_storage::{
-    memory_storage::MemoryStorage,
+mod message;
+mod kv;
+use crate::{
+    message::NodeMessage,
+    kv::KeyValue,
 };
 
+/*
 #[derive(Clone, Debug, Serialize, Deserialize)] // Clone and Debug are required traits.
 pub struct KeyValue {
     pub key: String,
     pub value: u64,
 }
+*/
 
+
+type NodeConnection = Framed<
+    CodecFramed<TcpStream, LengthDelimitedCodec>,
+    NodeMessage,
+    NodeMessage,
+    Cbor<NodeMessage, NodeMessage>,
+>;
 
 #[tokio::main]
 pub async fn main() {
-
-    // configuration with id 1 and the following cluster
-    let configuration_id = 1;
-    let cluster = vec![1, 2];
-
-    // create the replica 2 in this cluster (other replica instances are created similarly with pid 1 and 3 on the other nodes)
-    let my_pid = 2;
-    let my_peers = vec![1];
-
-    let omnipaxos_config = OmniPaxosConfig {
-        configuration_id,
-        pid: my_pid,
-        peers: my_peers,
-        ..Default::default()
+    // Create message
+    let args: Vec<String> = env::args().collect();
+    let kv = KeyValue { 
+        key: args[1].clone(),
+        value: args[2].parse().expect("Couldn't parse value arg"),
     };
 
-    let storage = MemoryStorage::<KeyValue, ()>::default();
-    let mut omni_paxos = omnipaxos_config.build(storage);
-   
-    // doesn't add message to outgoing_messages because we haven't elected a leader yet;
-    let write_entry = KeyValue { key: String::from("a"), value: 123 };
-    omni_paxos.append(write_entry).expect("Failed to append");
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
-
     // Bind a server socket
-    let socket = TcpStream::connect("127.0.0.1:17653").await.unwrap();
-
-    // Delimit frames using a length header
-    let length_delimited = FramedWrite::new(socket, LengthDelimitedCodec::new());
-
-    // Serialize frames with JSON
-    let mut serialized = tokio_serde::SymmetricallyFramed::new(length_delimited, SymmetricalJson::default());
+    let tcp_stream = TcpStream::connect("127.0.0.1:8000").await.expect("Couldn't connect to node"); 
+    let length_delimited = CodecFramed::new(tcp_stream, LengthDelimitedCodec::new());
+    let mut framed: NodeConnection = Framed::new(length_delimited, Cbor::default());
     
-    // send outgoing messages. This should be called periodically, e.g. every ms
-    for out_msg in omni_paxos.outgoing_messages() {
-        //let receiver = out_msg.get_receiver();
-        // send out_msg to receiver on network layer
-        println!("{:?}", out_msg);
-
-        // Send the value
-        serialized
-            .send(json!(out_msg))
-            .await
-            .unwrap();
+    
+    match framed.send(NodeMessage::Append(kv)).await {
+        Ok(_) => println!("Message sent"),
+        Err(err) => println!("Failed to end message: {}", err),
     }
-    
+
 
 }
