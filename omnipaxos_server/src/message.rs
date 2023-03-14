@@ -8,6 +8,7 @@ pub type ClientId = u64;
 pub enum NodeMessage {
     Hello(NodeId),
     OmniPaxosMessage(Message<KeyValue, KVSnapshot>),
+    
     // Reconfig transmission stuff
 }
 
