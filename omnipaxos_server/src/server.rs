@@ -1,11 +1,11 @@
 use omnipaxos_core::{
     messages::{Message, sequence_paxos::PaxosMessage},
-    util::NodeId, 
+    util::{NodeId, LogEntry}, 
     omni_paxos::{OmniPaxosConfig, OmniPaxos}};
-use omnipaxos_storage::memory_storage::MemoryStorage;
+use omnipaxos_storage::persistent_storage::{PersistentStorage, PersistentStorageConfig};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex}, net::SocketAddr,
+    sync::{Arc, Mutex}, net::SocketAddr, clone,
 };
 
 use tokio::{sync::mpsc, time};
@@ -13,6 +13,8 @@ use tokio::net::TcpStream;
 use futures::StreamExt;
 use log::*;
 use anyhow::{anyhow, Error};
+use commitlog::LogOptions;
+use sled::{Config};
 
 use crate::{
     router::Router, 
@@ -29,22 +31,32 @@ pub struct OmniPaxosServer {
     configs: Vec<OmniPaxosConfig>,
 }
 
-type OmniPaxosKV = OmniPaxos<KeyValue, KVSnapshot, MemoryStorage<KeyValue, KVSnapshot>>;
+type OmniPaxosKV = OmniPaxos<KeyValue, KVSnapshot, PersistentStorage<KeyValue, KVSnapshot>>;
 
 impl OmniPaxosServer {
     pub async fn new(address: SocketAddr, addresses: HashMap<NodeId, SocketAddr>, config: OmniPaxosConfig) -> Self {
         let id = config.pid;
+
+        let my_path = format!("my_db_{}", id);
+        let my_logopts = LogOptions::new(my_path.clone());
+        let my_sled_opts = Config::new().path(my_path.clone());
+
+        // create configuration with given arguments
+        let my_config = PersistentStorageConfig::with(my_path, my_logopts, my_sled_opts);
+        
         let omni_paxos: Arc<Mutex<OmniPaxosKV>> =
-            Arc::new(Mutex::new(config.clone().build(MemoryStorage::default())));
+            Arc::new(Mutex::new(config.clone().build(PersistentStorage::open(my_config))));
+        omni_paxos.lock().unwrap().fail_recovery();
+
         let router: Router = Router::new(id, address, addresses.clone()).await.unwrap();
         OmniPaxosServer { address, addresses, router, omni_paxos, configs: vec![config] }
     }
 
     fn handle_incoming_msg(&mut self, in_msg: Result<NodeMessage, Error>) {
-        trace!("Receiving: {:?}", in_msg);
+        debug!("Receiving: {:?}", in_msg);
         match in_msg {
             Ok(OmniPaxosMessage(msg)) => self.omni_paxos.lock().unwrap().handle_incoming(msg),
-            Ok(Hello(id)) => self.omni_paxos.lock().unwrap().reconnected(id), // TODO: gets called
+            Ok(Hello(id)) => {},//self.omni_paxos.lock().unwrap().reconnected(id), // TODO: gets called
                                                                               // on first connect
                                                                               // as well, is that
                                                                               // ok?
@@ -79,10 +91,16 @@ impl OmniPaxosServer {
                 biased;
 
                 _ = displays_interval.tick() => {
-                    let entries = self.omni_paxos.lock().unwrap().read_decided_suffix(0);
+                    let mut entries: Vec<LogEntry<KeyValue, KVSnapshot>> = vec![];
+                    let mut i = 0;
+                    while let Some(entry) = self.omni_paxos.lock().unwrap().read(i) {
+                        entries.push(entry);
+                        i += 1;
+                    }
+                    //let entries = self.omni_paxos.lock().unwrap().read_entries(0..7);
                     debug!("LOG ENTRIES: {:?}", entries);
                 },
-                _ = election_interval.tick() => { self.omni_paxos.lock().unwrap().election_timeout(); trace!("Leader = {:?}", self.omni_paxos.lock().unwrap().get_current_leader()) },
+                _ = election_interval.tick() => { self.omni_paxos.lock().unwrap().election_timeout(); debug!("Leader = {:?}", self.omni_paxos.lock().unwrap().get_current_leader()) },
                 _ = outgoing_interval.tick() => { self.send_outgoing_msgs().await; },
                 Some(in_msg) = self.router.next() => { self.handle_incoming_msg(in_msg); },
                 else => { }
