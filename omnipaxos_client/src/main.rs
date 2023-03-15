@@ -1,6 +1,7 @@
 use futures::prelude::*;
+use omnipaxos_core::util::NodeId;
 use serde::{Serialize, Deserialize};
-use std::env;
+use std::{env, collections::HashMap, net::SocketAddr};
 
 use tokio::net::TcpStream;
 use tokio_serde::{formats::Cbor, Framed};
@@ -31,15 +32,22 @@ type NodeConnection = Framed<
 
 #[tokio::main]
 pub async fn main() {
-    // Create message
+    // Parse args
     let args: Vec<String> = env::args().collect();
+    let node: NodeId = args[1].parse().expect("Couldn't parse node ID arg");
+    let key = args[2].clone();
+    let value = args[3].parse().expect("Couldn't parse value arg");
+
+    // Create message
     let kv = KeyValue { 
-        key: args[1].clone(),
-        value: args[2].parse().expect("Couldn't parse value arg"),
+        key,
+        value,
     };
 
     // Bind a server socket
-    let tcp_stream = TcpStream::connect("127.0.0.1:8000").await.expect("Couldn't connect to node"); 
+    let addresses = HashMap::<NodeId, SocketAddr>::from([(1, SocketAddr::from(([127,0,0,1], 8000))), (2, SocketAddr::from(([127,0,0,1], 8001))), (3, SocketAddr::from(([127,0,0,1], 8002)))]);
+    let address = addresses.get(&node).unwrap();
+    let tcp_stream = TcpStream::connect(address).await.expect("Couldn't connect to node"); 
     let length_delimited = CodecFramed::new(tcp_stream, LengthDelimitedCodec::new());
     let mut framed: NodeConnection = Framed::new(length_delimited, Cbor::default());
     
