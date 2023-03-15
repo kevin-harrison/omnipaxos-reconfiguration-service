@@ -6,6 +6,7 @@ use omnipaxos_storage::persistent_storage::{PersistentStorage, PersistentStorage
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex}, net::SocketAddr, clone,
+    path::Path,
 };
 
 use tokio::{sync::mpsc, time};
@@ -29,6 +30,7 @@ pub struct OmniPaxosServer {
     router: Router,
     pub omni_paxos: Arc<Mutex<OmniPaxosKV>>,
     configs: Vec<OmniPaxosConfig>,
+    first_connects: HashMap<NodeId, bool>,
 }
 
 type OmniPaxosKV = OmniPaxos<KeyValue, KVSnapshot, PersistentStorage<KeyValue, KVSnapshot>>;
@@ -37,29 +39,37 @@ impl OmniPaxosServer {
     pub async fn new(address: SocketAddr, addresses: HashMap<NodeId, SocketAddr>, config: OmniPaxosConfig) -> Self {
         let id = config.pid;
 
+        // Persistent Log config
         let my_path = format!("my_db_{}", id);
+        let exists_persistent_log = Path::new(&my_path).is_dir();
         let my_logopts = LogOptions::new(my_path.clone());
         let my_sled_opts = Config::new().path(my_path.clone());
-
-        // create configuration with given arguments
         let my_config = PersistentStorageConfig::with(my_path, my_logopts, my_sled_opts);
         
+        // Create OmniPaxos instance
         let omni_paxos: Arc<Mutex<OmniPaxosKV>> =
             Arc::new(Mutex::new(config.clone().build(PersistentStorage::open(my_config))));
-        omni_paxos.lock().unwrap().fail_recovery();
+        
+        // Request prepares if failed
+        if exists_persistent_log {
+            omni_paxos.lock().unwrap().fail_recovery();
+        }
 
         let router: Router = Router::new(id, address, addresses.clone()).await.unwrap();
-        OmniPaxosServer { address, addresses, router, omni_paxos, configs: vec![config] }
+        OmniPaxosServer { address, addresses, router, omni_paxos, configs: vec![config], first_connects: HashMap::new() }
     }
 
     fn handle_incoming_msg(&mut self, in_msg: Result<NodeMessage, Error>) {
         debug!("Receiving: {:?}", in_msg);
         match in_msg {
             Ok(OmniPaxosMessage(msg)) => self.omni_paxos.lock().unwrap().handle_incoming(msg),
-            Ok(Hello(id)) => {},//self.omni_paxos.lock().unwrap().reconnected(id), // TODO: gets called
-                                                                              // on first connect
-                                                                              // as well, is that
-                                                                              // ok?
+            Ok(Hello(id)) => {
+                if self.first_connects.get(&id).is_some() {
+                    self.omni_paxos.lock().unwrap().reconnected(id);
+                } else {
+                    self.first_connects.insert(id, true);
+                }
+            },             
             Ok(Append(kv)) => {
                 debug!("Got an append request from a client");
                 self.omni_paxos.lock().unwrap().append(kv).expect("Failed on append");
