@@ -1,15 +1,13 @@
 use futures::{SinkExt, Stream};
-use serde_json::{json, Value};
-use tokio::net::{TcpStream, TcpListener, TcpSocket};
-use tokio_serde::{formats::{Json, Cbor}, Framed};
+use tokio::net::{TcpStream, TcpListener};
+use tokio_serde::{formats::Cbor, Framed};
 use tokio_util::codec::{Framed as CodecFramed, LengthDelimitedCodec};
 use anyhow::{anyhow, Error};
 use std::{pin::Pin, collections::{HashMap, VecDeque}, net::SocketAddr};
 use std::task::{Context, Poll};
 
-use omnipaxos_core::{util::NodeId, messages::Message};
-use crate::message::{NodeMessage, ClientMessage, ServerMessage};
-use crate::kv::{KVSnapshot, KeyValue};
+use omnipaxos_core::util::NodeId;
+use crate::message::NodeMessage;
 
 
 use std::mem;
@@ -50,7 +48,7 @@ impl Router {
             connection.send(msg).await?;
         } else {
             // No connection to node so if heartbeat message try to reconnect then send
-            if let NodeMessage::OmniPaxosMessage(omnipaxos_core::messages::Message::BLE(_)) = msg {
+            if let NodeMessage::OmniPaxosMessage(_, omnipaxos_core::messages::Message::BLE(_)) = msg {
                 trace!("Trying to reconnect to node");
                 self.add_node(node).await?;
                 self.nodes.get_mut(&node).unwrap().send(msg).await?;
@@ -107,7 +105,7 @@ impl Stream for Router {
                         self_mut.buffer.push_back(NodeMessage::Hello(id));
                         self_mut.nodes.insert(id, pending);
                     }
-                    Some(Ok(NodeMessage::Append(kv))) => self_mut.buffer.push_back(NodeMessage::Append(kv)),
+                    Some(Ok(NodeMessage::Append(cid, kv))) => self_mut.buffer.push_back(NodeMessage::Append(cid, kv)),
                     Some(Ok(msg)) => warn!("Received unknown message during handshake: {:?}", msg),
                     Some(Err(err)) => error!("Error checking for new requests: {:?}", err),
                     None => (),
