@@ -1,115 +1,192 @@
-// Log replication layer (copied from omnipaxos/example/kv_store) 
-use crate::kv::{KVSnapshot, KeyValue};
-use omnipaxos_core::{messages::Message, util::NodeId};
+use omnipaxos_core::{
+    omni_paxos::{OmniPaxos, OmniPaxosConfig},
+    util::{ConfigurationId, LogEntry, NodeId},
+};
+use omnipaxos_storage::persistent_storage::{PersistentStorage, PersistentStorageConfig};
 use std::{
     collections::HashMap,
+    net::SocketAddr,
+    path::Path,
     sync::{Arc, Mutex},
 };
 
-use crate::{
-    util::{ELECTION_TIMEOUT, OUTGOING_MESSAGE_PERIOD},
-    MessageKV,
-    OmniPaxosKV,
-};
-use tokio::{sync::mpsc, time};
-
-// Service layer
-use tokio::net::TcpStream;
+use anyhow::Error;
+use commitlog::LogOptions;
 use futures::StreamExt;
 use log::*;
+use sled::Config;
+use tokio::time;
 
 use crate::{
+    kv::{KVSnapshot, KeyValue},
+    message::NodeMessage::{self, *},
     router::Router,
-    message::NodeMessage::*,
+    util::{ELECTION_TIMEOUT, OUTGOING_MESSAGE_PERIOD, WAIT_LEADER_TIMEOUT},
 };
 
 pub struct OmniPaxosServer {
-    pub omnipaxos: Arc<Mutex<OmniPaxosKV>>,
-    // pub incoming: mpsc::Receiver<Message<KeyValue, KVSnapshot>>,
-    // pub outgoing: HashMap<NodeId, mpsc::Sender<Message<KeyValue, KVSnapshot>>>,
-    pub addresses: HashMap<NodeId, String>,
+    router: Router,
+    omnipaxos_instances: HashMap<ConfigurationId, OmniPaxosInstance>,
+    configs: HashMap<ConfigurationId, OmniPaxosConfig>,
+    first_connects: HashMap<NodeId, bool>,
 }
 
+type OmniPaxosInstance = Arc<Mutex<OmniPaxos<KeyValue, (), PersistentStorage<KeyValue, ()>>>>;
+
 impl OmniPaxosServer {
-    pub(crate) async fn run(self) {
-        let addr = "127.0.0.1:3000";
-        let mut router: Router = Router::new(addr).await.unwrap();
-        
-        while let Some(node_msg) = router.next().await {
-            match node_msg {
-                Ok(OmniPaxosMessage(msg)) => (),
-                Ok(Hello(id)) => (),
-                Err(err) => {
-                    warn!("Could not deserialize message:{}", err);
+    pub async fn new(
+        addresses: HashMap<NodeId, SocketAddr>,
+        configs: Vec<OmniPaxosConfig>,
+    ) -> Self {
+        let mut omnipaxos_instances = HashMap::new();
+        let mut config_map = HashMap::new();
+        let mut id = None;
+
+        for config in configs {
+            let config_id = config.configuration_id;
+            id = Some(config.pid);
+
+            // Persistent Log config
+            let log_path = format!(
+                "{}/node{}/config_{}",
+                config.logger_file_path.as_ref().unwrap(),
+                config.pid,
+                config_id
+            );
+            let exists_persistent_log = Path::new(&log_path).is_dir();
+            let my_logopts = LogOptions::new(log_path.clone());
+            let my_sled_opts = Config::new().path(log_path.clone());
+            let my_config = PersistentStorageConfig::with(log_path, my_logopts, my_sled_opts);
+
+            // Create OmniPaxos instance
+            let omnipaxos_instance: OmniPaxosInstance = Arc::new(Mutex::new(
+                config.clone().build(PersistentStorage::open(my_config)),
+            ));
+            // Request prepares if failed
+            if exists_persistent_log {
+                omnipaxos_instance.lock().unwrap().fail_recovery();
+            }
+            omnipaxos_instances.insert(config_id, omnipaxos_instance);
+            config_map.insert(config_id, config);
+        }
+
+        // Create router to handle node TCP connections
+        let id = id.unwrap();
+        let listen_address = addresses.get(&id).unwrap().clone();
+        let router: Router = Router::new(id, listen_address, addresses.clone())
+            .await
+            .unwrap();
+
+        OmniPaxosServer {
+            router,
+            omnipaxos_instances,
+            configs: HashMap::new(),
+            first_connects: HashMap::new(),
+        }
+    }
+
+    fn handle_incoming_msg(&mut self, in_msg: Result<NodeMessage, Error>) {
+        debug!("Receiving: {:?}", in_msg);
+        match in_msg {
+            // Pass message to correct instance
+            Ok(OmniPaxosMessage(cid, msg)) => self
+                .omnipaxos_instances
+                .get(&cid)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .handle_incoming(msg),
+            // On node reconnect call reconnect() on relevant instances
+            Ok(Hello(id)) => {
+                if self.first_connects.get(&id).is_some() {
+                    let relevant_configs = self
+                        .configs
+                        .iter()
+                        .filter(|(_, config)| config.peers.contains(&id));
+                    for (cid, _) in relevant_configs {
+                        self.omnipaxos_instances
+                            .get(cid)
+                            .unwrap()
+                            .lock()
+                            .unwrap()
+                            .reconnected(id);
+                    }
+                } else {
+                    self.first_connects.insert(id, true);
+                }
+            }
+            // Append to log of corrrect instance
+            Ok(Append(cid, kv)) => {
+                debug!("Got an append request from a client");
+                self.omnipaxos_instances
+                    .get(&cid)
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .append(kv)
+                    .expect("Failed on append");
+            }
+            Err(err) => warn!("Could not deserialize message: {}", err),
+        }
+    }
+
+    async fn send_outgoing_msgs(&mut self) {
+        for (config_id, instance) in self.omnipaxos_instances.iter() {
+            let messages = instance.lock().unwrap().outgoing_messages();
+            for msg in messages {
+                let receiver = msg.get_receiver();
+                trace!("Sending to {}: {:?}", receiver, msg);
+                match self
+                    .router
+                    .send_message(receiver, OmniPaxosMessage(*config_id, msg))
+                    .await
+                {
+                    Err(err) => warn!("Error sending message to node {}, {}", receiver, err),
+                    _ => (),
                 }
             }
         }
-        /*
-        // sender / receiver - for data received from the server
-        let (from_tcp_sr, from_tcp_rr) = mpsc::channel(100);
+    }
 
-        // sender / receiver - for data to send to the server
-        let (to_tcp_sr, to_tcp_rr) = mpsc::channel(100);
-
-        // spawn a worker thread
-        let work = tokio::spawn(OmniPaxosServer::process(to_tcp_sr, from_tcp_rr));
-
-        // spawn a connector
-        for node_id in self.addresses.keys() {
-              
+    fn handle_election_timeout(&self) {
+        for (_, instance) in self.omnipaxos_instances.iter() {
+            instance.lock().unwrap().election_timeout();
         }
-        let tcp = tokio::spawn(OmniPaxosServer::connect(from_tcp_sr, to_tcp_rr, Arc::new(Mutex::new(self.addresses)), 2));
-
-        // listen for an interruption
-        tokio::signal::ctrl_c().await;
-        // before exiting
-        work.abort();
-        tcp.abort();
-        */
     }
 
-
-    async fn process(sender_to_tcp: mpsc::Sender<MessageKV>, 
-                     receiver_from_tcp: mpsc::Receiver<MessageKV>) {
-
-        // use tokio::select!
-
-        // and either forward to TCP the results of your async work
-        // or get data from TCP and do something with it 
-
-        // in a loop
+    fn debug_state(&self) {
+        for (config_id, instance) in self.omnipaxos_instances.iter() {
+            let mut entries: Vec<LogEntry<KeyValue, ()>> = vec![];
+            let mut i = 0;
+            while let Some(entry) = instance.lock().unwrap().read(i) {
+                entries.push(entry);
+                i += 1;
+            }
+            //let entries = self.omnipaxos_instances.lock().unwrap().read_entries(0..7);
+            debug!("C{} LOG ENTRIES: {:?}", config_id, entries);
+            debug!(
+                "C{} Leader = {:?}",
+                config_id,
+                instance.lock().unwrap().get_current_leader()
+            );
+        }
     }
 
-    async fn connect(sender_to_worker: mpsc::Sender<MessageKV>, 
-                     receiver_from_worker: mpsc::Receiver<MessageKV>,
-                     addresses: Arc<Mutex<HashMap<NodeId, String>>>,
-                     id: NodeId) {
+    pub(crate) async fn run(&mut self) {
+        let mut outgoing_interval = time::interval(OUTGOING_MESSAGE_PERIOD);
+        let mut election_interval = time::interval(ELECTION_TIMEOUT);
+        let mut displays_interval = time::interval(WAIT_LEADER_TIMEOUT);
 
-        let mut address = addresses.lock().unwrap().get(&id).unwrap().clone(); 
         loop {
-            match TcpStream::connect(address).await { 
-                Ok(stream) => {
+            tokio::select! {
+                biased;
 
-                    // use tokio::select!
-
-                    // and either get data from the stream
-                    // forwarding it to worker, as needed
-
-                    // or get data from the worker
-                    // and forward it to the server
-
-                    // on TCP connection issues, fall through
-                    // to the timer for a reconnection attempt in 30 secs
-                }
-                Err(_) => ()
+                _ = displays_interval.tick() => { self.debug_state(); },
+                _ = election_interval.tick() => { self.handle_election_timeout(); },
+                _ = outgoing_interval.tick() => { self.send_outgoing_msgs().await; },
+                Some(in_msg) = self.router.next() => { self.handle_incoming_msg(in_msg); },
+                else => { }
             }
-            let secs_30 = core::time::Duration::from_secs(30);
-            tokio::time::sleep(secs_30).await;
-            if let Some(addr) = addresses.lock().unwrap().get(&id) {
-                address = addr.clone();
-            }
-            else {break;}
         }
     }
-    
 }
