@@ -1,10 +1,7 @@
-use serde::{Deserialize, Serialize};
 use crate::kv::{KVSnapshot, KeyValue};
 use omnipaxos_core::{util::NodeId, messages::Message};
 
 use self::log_migration::LogMigrationMessage;
-
-// pub type ClientId = u64;
 
 pub mod log_migration {
     use omnipaxos_core::{
@@ -87,16 +84,7 @@ pub mod log_migration {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum NodeMessage {
     Hello(NodeId),
-    OmniPaxosMessage(Message<KeyValue, KVSnapshot>),
     LogMigrationMessage(LogMigrationMessage<KeyValue, KVSnapshot>),
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub enum ServerMessage {
-    Hello(NodeId),
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub enum ClientMessage {
-    Hello(NodeId),
+    OmniPaxosMessage(ConfigurationId, Message<KeyValue, KVSnapshot>),
+    Append(ConfigurationId, KeyValue),
 }
