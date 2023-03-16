@@ -1,6 +1,5 @@
 use futures::prelude::*;
-use omnipaxos_core::util::NodeId;
-use serde::{Serialize, Deserialize};
+use omnipaxos_core::util::{NodeId, ConfigurationId};
 use std::{env, collections::HashMap, net::SocketAddr};
 
 use tokio::net::TcpStream;
@@ -35,8 +34,9 @@ pub async fn main() {
     // Parse args
     let args: Vec<String> = env::args().collect();
     let node: NodeId = args[1].parse().expect("Couldn't parse node ID arg");
-    let key = args[2].clone();
-    let value = args[3].parse().expect("Couldn't parse value arg");
+    let config: ConfigurationId = args[2].parse().expect("Couldn't parse config ID arg");
+    let key = args[3].clone();
+    let value = args[4].parse().expect("Couldn't parse value arg");
 
     // Create message
     let kv = KeyValue { 
@@ -52,7 +52,7 @@ pub async fn main() {
     let mut framed: NodeConnection = Framed::new(length_delimited, Cbor::default());
     
     
-    match framed.send(NodeMessage::Append(kv)).await {
+    match framed.send(NodeMessage::Append(config, kv)).await {
         Ok(_) => println!("Message sent"),
         Err(err) => println!("Failed to end message: {}", err),
     }
