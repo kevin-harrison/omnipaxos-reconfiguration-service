@@ -8,6 +8,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Debug)]
 pub enum NodeMessage {
     Hello(NodeId),
-    OmniPaxosMessage(ConfigurationId, Message<KeyValue, ()>),
+    OmniPaxosMessage(ConfigurationId, Message<KeyValue, KVSnapshot>),
     Append(ConfigurationId, KeyValue),
 }
