@@ -208,5 +208,28 @@ impl OmniPaxosServer {
                 else => { }
             }
         }
+
+        fn handle_pull_start() {
+
+        }
+
+        fn handle_pull_request() {
+
+        }
+
+        fn handle_pull_reponse() {
+
+        }
+
+        fn handle_pull_done() {
+
+        }
+
+        fn start_new_configuration() {
+
+        }
+
+
+
     }
 }
