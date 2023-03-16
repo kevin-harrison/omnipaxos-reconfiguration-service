@@ -1,11 +1,10 @@
 use omnipaxos_core::{
     omni_paxos::{OmniPaxos, OmniPaxosConfig},
-    util::{ConfigurationId, LogEntry, NodeId},
+    util::{ConfigurationId, NodeId},
 };
 use omnipaxos_storage::persistent_storage::{PersistentStorage, PersistentStorageConfig};
 use std::{
     collections::HashMap,
-    net::SocketAddr,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -29,26 +28,26 @@ pub struct OmniPaxosServer {
     omnipaxos_instances: HashMap<ConfigurationId, OmniPaxosInstance>,
     configs: HashMap<ConfigurationId, OmniPaxosConfig>,
     first_connects: HashMap<NodeId, bool>,
+    active_instance: ConfigurationId
 }
 
-type OmniPaxosInstance = Arc<Mutex<OmniPaxos<KeyValue, (), PersistentStorage<KeyValue, ()>>>>;
+type OmniPaxosInstance = Arc<Mutex<OmniPaxos<KeyValue, KVSnapshot, PersistentStorage<KeyValue, KVSnapshot>>>>;
 
 impl OmniPaxosServer {
-    pub async fn new(
-        addresses: HashMap<NodeId, SocketAddr>,
+    pub fn new(
+        router: Router,
         configs: Vec<OmniPaxosConfig>,
     ) -> Self {
         let mut omnipaxos_instances = HashMap::new();
         let mut config_map = HashMap::new();
-        let mut id = None;
+        let mut active_instance = 0;
 
         for config in configs {
             let config_id = config.configuration_id;
-            id = Some(config.pid);
 
             // Persistent Log config
             let log_path = format!(
-                "{}/node{}/config_{}",
+                "{}node{}/config_{}",
                 config.logger_file_path.as_ref().unwrap(),
                 config.pid,
                 config_id
@@ -62,6 +61,9 @@ impl OmniPaxosServer {
             let omnipaxos_instance: OmniPaxosInstance = Arc::new(Mutex::new(
                 config.clone().build(PersistentStorage::open(my_config)),
             ));
+            if let None = omnipaxos_instance.lock().unwrap().is_reconfigured() {
+                active_instance = config_id;
+            }
             // Request prepares if failed
             if exists_persistent_log {
                 omnipaxos_instance.lock().unwrap().fail_recovery();
@@ -70,32 +72,31 @@ impl OmniPaxosServer {
             config_map.insert(config_id, config);
         }
 
-        // Create router to handle node TCP connections
-        let id = id.unwrap();
-        let listen_address = addresses.get(&id).unwrap().clone();
-        let router: Router = Router::new(id, listen_address, addresses.clone())
-            .await
-            .unwrap();
-
         OmniPaxosServer {
             router,
             omnipaxos_instances,
             configs: HashMap::new(),
             first_connects: HashMap::new(),
+            active_instance
         }
     }
 
     fn handle_incoming_msg(&mut self, in_msg: Result<NodeMessage, Error>) {
-        debug!("Receiving: {:?}", in_msg);
+        trace!("Receiving: {:?}", in_msg);
         match in_msg {
             // Pass message to correct instance
-            Ok(OmniPaxosMessage(cid, msg)) => self
+            Ok(OmniPaxosMessage(cid, msg)) => {
+                //if let omnipaxos_core::messages::Message::SequencePaxos(m) = msg.clone() {
+                //    debug!("Receiving: {:?}", m);
+                //}
+                self
                 .omnipaxos_instances
                 .get(&cid)
                 .unwrap()
                 .lock()
                 .unwrap()
-                .handle_incoming(msg),
+                .handle_incoming(msg)
+            },
             // On node reconnect call reconnect() on relevant instances
             Ok(Hello(id)) => {
                 if self.first_connects.get(&id).is_some() {
@@ -114,7 +115,7 @@ impl OmniPaxosServer {
                 } else {
                     self.first_connects.insert(id, true);
                 }
-            }
+            },
             // Append to log of corrrect instance
             Ok(Append(cid, kv)) => {
                 debug!("Got an append request from a client");
@@ -125,8 +126,21 @@ impl OmniPaxosServer {
                     .unwrap()
                     .append(kv)
                     .expect("Failed on append");
+            },
+            /*            
+            Ok(Reconfig(rc)) => {
+                debug!("Got an append request from a client");
+                self.omnipaxos_instances
+                    .get(&self.active_instance)
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .reconfigure(rc)
+                    .expect("Failed on append");
             }
+            */
             Err(err) => warn!("Could not deserialize message: {}", err),
+            
         }
     }
 
@@ -139,14 +153,20 @@ impl OmniPaxosServer {
                 match self
                     .router
                     .send_message(receiver, OmniPaxosMessage(*config_id, msg))
-                    .await
-                {
-                    Err(err) => warn!("Error sending message to node {}, {}", receiver, err),
-                    _ => (),
+                    .await {
+                    Err(err) => trace!("Error sending message to node {}, {}", receiver, err),
+                    _ => {
+                        //if let omnipaxos_core::messages::Message::SequencePaxos(m) = msg.clone() {
+                        //    debug!("Sending to {} : {:?}", receiver, m);
+                        //}
+                    },
                 }
             }
         }
     }
+
+
+
 
     fn handle_election_timeout(&self) {
         for (_, instance) in self.omnipaxos_instances.iter() {
@@ -156,7 +176,7 @@ impl OmniPaxosServer {
 
     fn debug_state(&self) {
         for (config_id, instance) in self.omnipaxos_instances.iter() {
-            let mut entries: Vec<LogEntry<KeyValue, ()>> = vec![];
+            let mut entries = vec![];
             let mut i = 0;
             while let Some(entry) = instance.lock().unwrap().read(i) {
                 entries.push(entry);

@@ -1,5 +1,5 @@
 use env_logger;
-use std::{collections::HashMap, env, net::SocketAddr};
+use std::{collections::HashMap, env, net::SocketAddr, path::Path};
 
 /*
 use futures::prelude::*;
@@ -10,8 +10,12 @@ use tokio_serde::formats::*;
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
 */
 
-use crate::server::OmniPaxosServer;
-use omnipaxos_core::{omni_paxos::*, util::NodeId};
+use crate::{
+    server::OmniPaxosServer,
+    router::Router,
+};
+use omnipaxos_core::{omni_paxos::OmniPaxosConfig, util::NodeId};
+use hocon::HoconLoader;
 
 mod kv;
 mod message;
@@ -25,31 +29,36 @@ pub async fn main() {
 
     // Server config
     let args: Vec<String> = env::args().collect();
-    let id: NodeId = args[1].parse().expect("Unable to parse node ID");
-    let peers: Vec<NodeId> = [1, 2, 3].iter().filter(|&&p| p != id).copied().collect();
+    let id: NodeId = args[1].parse().expect("Unable to parse node ID"); 
+
+    // Addresses hardcoded for router
     let addresses = HashMap::<NodeId, SocketAddr>::from([
         (1, SocketAddr::from(([127, 0, 0, 1], 8000))),
         (2, SocketAddr::from(([127, 0, 0, 1], 8001))),
         (3, SocketAddr::from(([127, 0, 0, 1], 8002))),
     ]);
+     
+    let listen_address = addresses.get(&id).unwrap().clone();
+    let router: Router = Router::new(id, listen_address, addresses.clone())
+        .await
+        .unwrap();
 
-    let config = OmniPaxosConfig {
-        pid: id,
-        configuration_id: 1,
-        peers: peers.clone(),
-        logger_file_path: Some("logs".to_string()),
-        ..Default::default()
-    };
-
-    let config2 = OmniPaxosConfig {
-        pid: id,
-        configuration_id: 2,
-        peers,
-        logger_file_path: Some("logs".to_string()),
-        ..Default::default()
-    };
+    // Create OmniPaxos configs
+    let mut configs: Vec<OmniPaxosConfig> = vec![];
+    let config_dir = format!("config/node{}", id); 
+    for entry in Path::new(&config_dir).read_dir().expect("Config directory not found") {
+        if let Ok(entry) = entry {
+            let cfg = HoconLoader::new()
+                .load_file(entry.path())
+                .expect("Failed to load hocon file")
+                .hocon()
+                .unwrap();
+            let config = OmniPaxosConfig::with_hocon(&cfg);
+            configs.push(config);
+        }
+    }
 
     // Start server
-    let mut server = OmniPaxosServer::new(addresses, vec![config, config2]).await;
+    let mut server = OmniPaxosServer::new(router, configs);
     server.run().await;
 }
