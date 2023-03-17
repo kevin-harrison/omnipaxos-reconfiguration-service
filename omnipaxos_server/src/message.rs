@@ -1,15 +1,12 @@
-use self::{
-    log_migration::LogMigrationMessage,
-    client::ClientMessage
-};
+use self::{client::ClientMessage, log_migration::LogMigrationMessage};
 
 pub mod log_migration {
     use omnipaxos_core::{
         storage::{Entry, Snapshot, SnapshotType},
-        util::{NodeId, ConfigurationId, LogEntry},
+        util::{ConfigurationId, LogEntry, NodeId},
     };
-    use std::fmt::Debug;
     use serde::{Deserialize, Serialize};
+    use std::fmt::Debug;
 
     // The leader send this to inform new servers to start pulling logs from `des_servers`
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,11 +41,11 @@ pub mod log_migration {
     }
 
     // The leader tells all the servers to abondon OmniPaxos instances and start a new one.
-    #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-    pub struct StartNewConfiguration{
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct StartNewConfiguration {
         pub new_servers: Vec<NodeId>,
     }
-    
+
     #[allow(missing_docs)]
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub enum LogMigrationMsg<T, S>
@@ -81,34 +78,45 @@ pub mod log_migration {
         T: Entry,
         S: Snapshot<T>,
     {
-        pub fn get_receiver(&self) -> NodeId { self.to }
-        pub fn get_sender(&self) -> NodeId { self.from }
+        pub fn get_receiver(&self) -> NodeId {
+            self.to
+        }
+        pub fn get_sender(&self) -> NodeId {
+            self.from
+        }
     }
 }
 
 pub mod client {
     use omnipaxos_core::{
-        storage::{Entry},
-        util::{ConfigurationId},
-        omni_paxos::ReconfigurationRequest,
+        omni_paxos::ReconfigurationRequest, storage::Entry, util::ConfigurationId,
     };
-    use std::fmt::Debug;
     use serde::{Deserialize, Serialize};
+    use std::fmt::Debug;
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct Append<T> where T: Entry {
+    pub struct Append<T>
+    where
+        T: Entry,
+    {
         pub entry: T,
     }
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct Reconfigure where {
+    pub struct Reconfigure {
         pub request: ReconfigurationRequest,
     }
-    pub enum ClientMsg<T> where T: Entry {
+    pub enum ClientMsg<T>
+    where
+        T: Entry,
+    {
         #[allow(missing_docs)]
         Append(Append<T>),
         Reconfigure(Reconfigure),
     }
-    pub struct ClientMessage<T> where T: Entry {
+    pub struct ClientMessage<T>
+    where
+        T: Entry,
+    {
         pub configuration_id: ConfigurationId,
         pub msg: ClientMsg<T>,
     }
@@ -117,7 +125,7 @@ pub mod client {
 use omnipaxos_core::{
     messages::Message,
     storage::{Entry, Snapshot},
-    util::{NodeId, ConfigurationId},
+    util::{ConfigurationId, NodeId},
 };
 use serde::{Deserialize, Serialize};
 

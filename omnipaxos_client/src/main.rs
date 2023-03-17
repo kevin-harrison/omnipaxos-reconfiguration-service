@@ -1,5 +1,8 @@
 use futures::prelude::*;
-use omnipaxos_core::{util::{ConfigurationId, NodeId}, omni_paxos::ReconfigurationRequest};
+use omnipaxos_core::{
+    omni_paxos::ReconfigurationRequest,
+    util::{ConfigurationId, NodeId},
+};
 use std::{collections::HashMap, env, net::SocketAddr};
 
 use tokio::net::TcpStream;
@@ -8,7 +11,13 @@ use tokio_util::codec::{Framed as CodecFramed, LengthDelimitedCodec};
 
 mod kv;
 mod message;
-use crate::{kv::KeyValue, message::{NodeMessage::{self, *}, log_migration::{LogMigrationMsg::{self, *}}}};
+use crate::{
+    kv::KeyValue,
+    message::{
+        log_migration::LogMigrationMsg::{self, *},
+        NodeMessage::{self, *},
+    },
+};
 
 type NodeConnection = Framed<
     CodecFramed<TcpStream, LengthDelimitedCodec>,
@@ -29,14 +38,12 @@ pub async fn main() {
         let key = args[4].clone();
         let value = args[5].parse().expect("Couldn't parse value arg");
         append(node, config, key, value).await;
-
-    }
-    else if command == "reconfig" {
+    } else if command == "reconfig" {
         let node: NodeId = args[2].parse().expect("Couldn't parse node ID arg");
         let mut config_nodes: Vec<NodeId> = vec![];
         let mut i = 3;
         while let Some(id) = args.get(i) {
-            config_nodes.push(id.parse().expect("Couldn't parse config node ID arg")); 
+            config_nodes.push(id.parse().expect("Couldn't parse config node ID arg"));
             i += 1;
         }
         reconfigure(node, config_nodes).await;
@@ -72,7 +79,7 @@ async fn reconfigure(node: NodeId, nodes: Vec<NodeId>) {
     // Create message
     let request = ReconfigurationRequest::with(nodes, None);
     let message = LogMigrationMessage(StartNewConfiguration(request));
-    
+
     // Bind a server socket
     let addresses = HashMap::<NodeId, SocketAddr>::from([
         (1, SocketAddr::from(([127, 0, 0, 1], 8000))),
@@ -92,5 +99,4 @@ async fn reconfigure(node: NodeId, nodes: Vec<NodeId>) {
         Ok(_) => println!("Message sent"),
         Err(err) => println!("Failed to end message: {}", err),
     }
-
 }

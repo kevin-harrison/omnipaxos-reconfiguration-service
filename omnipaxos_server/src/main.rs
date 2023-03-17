@@ -11,13 +11,13 @@ use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
 */
 
 use crate::{
-    server::OmniPaxosServer,
-    router::Router,
     kv::{KVSnapshot, KeyValue},
+    router::Router,
+    server::OmniPaxosServer,
 };
+use hocon::HoconLoader;
 use omnipaxos_core::{omni_paxos::OmniPaxosConfig, util::NodeId};
 use omnipaxos_storage::persistent_storage::PersistentStorage;
-use hocon::HoconLoader;
 
 mod kv;
 mod message;
@@ -31,7 +31,7 @@ pub async fn main() {
 
     // Server config
     let args: Vec<String> = env::args().collect();
-    let id: NodeId = args[1].parse().expect("Unable to parse node ID"); 
+    let id: NodeId = args[1].parse().expect("Unable to parse node ID");
 
     // Addresses hardcoded for router
     let addresses = HashMap::<NodeId, SocketAddr>::from([
@@ -41,16 +41,19 @@ pub async fn main() {
         (4, SocketAddr::from(([127, 0, 0, 1], 8003))),
         (5, SocketAddr::from(([127, 0, 0, 1], 8004))),
     ]);
-     
+
     let listen_address = addresses.get(&id).unwrap().clone();
-    let router: Router = Router::new(id, listen_address, addresses.clone())
+    let router= Router::<KeyValue, KVSnapshot>::new(id, listen_address, addresses.clone())
         .await
         .unwrap();
 
     // Create OmniPaxos configs
     let mut configs: Vec<OmniPaxosConfig> = vec![];
-    let config_dir = format!("config/node{}", id); 
-    for entry in Path::new(&config_dir).read_dir().expect("Config directory not found") {
+    let config_dir = format!("config/node{}", id);
+    for entry in Path::new(&config_dir)
+        .read_dir()
+        .expect("Config directory not found")
+    {
         if let Ok(entry) = entry {
             let cfg = HoconLoader::new()
                 .load_file(entry.path())
@@ -63,6 +66,9 @@ pub async fn main() {
     }
 
     // Start server
-    let mut server = OmniPaxosServer::<KeyValue, KVSnapshot, PersistentStorage<KeyValue, KVSnapshot>>::new(id, router, configs);
+    let mut server =
+        OmniPaxosServer::<KeyValue, KVSnapshot, PersistentStorage<KeyValue, KVSnapshot>>::new(
+            id, router, configs,
+        );
     server.run().await;
 }
