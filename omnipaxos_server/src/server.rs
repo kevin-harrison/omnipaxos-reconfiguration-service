@@ -170,7 +170,7 @@ where
         }
     }
 
-    async fn handle_incoming_client_msg(&mut self, clientMessage: client::ClientMessage<T>) {
+    fn handle_incoming_client_msg(&mut self, clientMessage: client::ClientMessage<T>) {
         let client::ClientMessage{configuration_id, msg} = clientMessage;
         match msg {
             // Append to log of corrrect instance
@@ -292,6 +292,8 @@ where
                             Err(err) => trace!("Error sending LogPullOneDone from {} to {}", self.id, out_msg.get_receiver()),
                             _ => {},
                         }
+                    
+                    self.log_migration_state = LogMigrationState::default();
                 }
             }
             LogPullOneDone { get_idx } => {
@@ -323,25 +325,49 @@ where
                                 _ => {},
                             }
                     }
+
+                    self.log_migration_state = LogMigrationState::default();
                 } 
             }
             StartNewConfiguration { new_servers } => {
-                // start a new configuration
-                let old_configuration_id = configuration_id - 1;
-                let mut new_config = self
-                    .configs
-                    .get(&old_configuration_id)
-                    .unwrap()
-                    .clone();
-                new_config.configuration_id = configuration_id;
-                new_config.peers = new_servers
-                    .iter()
-                    .filter(|id| id != self.id);
+                // Create and save new config file
+                let config_id = configuration_id;
+                let peers = new_servers
+                    .into_iter()
+                    .filter(|&id| id != self.id)
+                    .collect();
 
-                let new_instance = Self.create_instance(&new_config);
-                self.omnipaxos_instances.insert(configuration_id, new_instance);
-                self.configs.insert(configuration_id, new_config)
+                let config_str = format!(r#"{{
+                    config_id: {},
+                    pid: {},
+                    peers: {:?},
+                    log_file_path: "logs/"
+                }}
+                "#, config_id, self.id, peers);
+
+                let config_file_path = format!(
+                    "config/node{}/c{}.conf",
+                    self.id,
+                    config_id
+                );
+                fs::write(config_file_path.clone(), config_str).expect("Couldn't write new config file");
+
+                // TODO: Need to update routers addresses with new addresses
+                // parsed from the metadata of the stopsign with self.router.add_address(). 
+                // For now all addresses are hard coded in main.rs
                 
+                // Create new OmniPaxos instance
+                let cfg = HoconLoader::new()
+                    .load_file(config_file_path)
+                    .expect("Failed to load hocon file")
+                    .hocon()
+                    .unwrap();
+                let config = OmniPaxosConfig::with_hocon(&cfg);
+                let new_instance = Self.create_instance(&config);
+                self.omnipaxos_instances.insert(config_id, new_instance);
+
+                // New instance is now active
+                self.active_instance = config_id;
 
             }
         }
@@ -409,45 +435,59 @@ where
             debug!("Stopsign detected! Creating new instance");
 
             // TODO!! if itself is leader, send LogPullStart to all the new servers
-            
-            // Create and save new config file
-            let config_id = stopsign.config_id;
-            let peers: Vec<NodeId> = stopsign
-                .nodes
-                .into_iter()
-                .filter(|&x| x != self.id).collect();
-
-            let config_str = format!(r#"{{
-                config_id: {},
-                pid: {},
-                peers: {:?},
-                log_file_path: "logs/"
-            }}
-            "#, config_id, self.id, peers);
-
-            let config_file_path = format!(
-                "config/node{}/c{}.conf",
-                self.id,
-                config_id
-            );
-            fs::write(config_file_path.clone(), config_str).expect("Couldn't write new config file");
-
-            // TODO: Need to update routers addresses with new addresses
-            // parsed from the metadata of the stopsign with self.router.add_address(). 
-            // For now all addresses are hard coded in main.rs
-            
-            // Create new OmniPaxos instance
-            let cfg = HoconLoader::new()
-                .load_file(config_file_path)
-                .expect("Failed to load hocon file")
-                .hocon()
+            let leader_id = self.omnipaxos_instances
+                .get(&self.active_instance)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .get_current_leader()
                 .unwrap();
-            let config = OmniPaxosConfig::with_hocon(&cfg);
-            let new_instance = Self.create_instance(&config);
-            self.omnipaxos_instances.insert(config_id, new_instance);
 
-            // New instance is now active
-            self.active_instance = config_id;
+            let decided_idx = self.omnipaxos_instances
+                .get(&self.active_instance)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .get_decided_idx();
+
+            if leader_id != self.id {
+                return;
+            }
+
+            // TODO!! if itself is leader, send LogPullStart to all the new servers
+            let old_servers = self.configs
+                .get(&self.active_instance)
+                .unwrap()
+                .peers;
+            old_servers.append(self.id);
+
+            self.log_migration_state.new_servers = stopsign.nodes; // all the servers in the next configuration
+        
+            let new_servers_to_pull_log: Vec<u64> = self.log_migration_state.new_servers
+                .iter()
+                .filter(|&id| !old_servers.contains(id))
+                .cloned()
+                .collect();
+
+            for new_server_to_pull_log in new_servers_to_pull_log {
+                let out_msg =
+                    log_migration::LogMigrationMessage::<T, S> {
+                        configuration_id: stopsign.config_id - 1, // new configuration!!
+                        from: self.id,
+                        to: new_server_to_pull_log,
+                        msg: LogPullStart {
+                            des_servers: old_servers,
+                            decided_idx: decided_idx
+                        }
+                    };
+                match self
+                    .router
+                    .send_message(from, LogMigrationMessage(out_msg))
+                    .await {
+                        Err(err) => trace!("Error sending LogPullStart from {} to {}", self.id, out_msg.get_receiver()),
+                        _ => {},
+                    }
+            }
         }
     }
 
