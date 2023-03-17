@@ -3,7 +3,7 @@ use crate::kv::{KVSnapshot, KeyValue};
 use self::log_migration::LogMigrationMessage;
 
 pub mod log_migration {
-    use omnipaxos_core::util::{ConfigurationId, LogEntry, NodeId};
+    use omnipaxos_core::{util::{ConfigurationId, LogEntry, NodeId}, omni_paxos::ReconfigurationRequest};
     use serde::{Deserialize, Serialize};
     use std::fmt::Debug;
 
@@ -28,19 +28,13 @@ pub mod log_migration {
     pub struct PullResponse {
         pub from_idx: u64,
         pub to_idx: u64,
-        pub logs: Vec<LogEntry<KeyValue, KVSnapshot>>,
+        //pub logs: Vec<LogEntry<KeyValue, KVSnapshot>>,
     }
 
     // New servers tell the leader that they had finished syncing logs
     #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
     pub struct PullOneDone {
         pub get_idx: u64, // how many entries of log does the server get
-    }
-
-    // The leader tells all the servers to abondon OmniPaxos instances and start a new one.
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct NewConfiguration {
-        pub new_servers: Vec<NodeId>,
     }
 
     #[allow(missing_docs)]
@@ -51,7 +45,6 @@ pub mod log_migration {
         LogPullRequest(PullRequest),
         LogPullResponse(PullResponse),
         LogPullOneDone(PullOneDone),
-        StartNewConfiguration(NewConfiguration),
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -89,17 +82,12 @@ pub enum NodeMessage {
     LogMigrateMessage(LogMigrationMessage),
 
     // client messages
-    ClientMessage(ClientMessage),
+    ClientMessage(ClientMsg),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ClientMsg {
-    Append(KeyValue),
+    Append(ConfigurationId, KeyValue),
     Reconfigure(ReconfigurationRequest),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ClientMessage {
-    pub configuration_id: ConfigurationId,
-    pub msg: ClientMsg,
-}

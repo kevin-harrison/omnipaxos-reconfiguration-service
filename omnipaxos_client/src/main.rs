@@ -3,6 +3,7 @@ use omnipaxos_core::{
     omni_paxos::ReconfigurationRequest,
     util::{ConfigurationId, NodeId},
 };
+use serde::{Serialize, Deserialize};
 use std::{collections::HashMap, env, net::SocketAddr};
 
 use tokio::net::TcpStream;
@@ -16,6 +17,7 @@ use crate::{
     message::{
         log_migration::LogMigrationMsg::{self, *},
         NodeMessage::{self, *},
+        ClientMsg::{self, *}
     },
 };
 
@@ -25,6 +27,12 @@ type NodeConnection = Framed<
     NodeMessage,
     Cbor<NodeMessage, NodeMessage>,
 >;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MetaData {
+    transmission_scheme: HashMap<NodeId, Vec<NodeId>>,
+    addresses: HashMap<NodeId, SocketAddr> 
+}
 
 #[tokio::main]
 pub async fn main() {
@@ -69,7 +77,7 @@ async fn append(node: NodeId, config: ConfigurationId, key: String, value: u64) 
     let length_delimited = CodecFramed::new(tcp_stream, LengthDelimitedCodec::new());
     let mut framed: NodeConnection = Framed::new(length_delimited, Cbor::default());
 
-    match framed.send(NodeMessage::Append(config, kv)).await {
+    match framed.send(ClientMessage(Append(config, kv))).await {
         Ok(_) => println!("Message sent"),
         Err(err) => println!("Failed to end message: {}", err),
     }
@@ -77,8 +85,9 @@ async fn append(node: NodeId, config: ConfigurationId, key: String, value: u64) 
 
 async fn reconfigure(node: NodeId, nodes: Vec<NodeId>) {
     // Create message
+    let metadata = bincode::serialize(&nodes).unwrap(); 
     let request = ReconfigurationRequest::with(nodes, None);
-    let message = LogMigrationMessage(StartNewConfiguration(request));
+    let message = ClientMessage(Reconfigure(request));
 
     // Bind a server socket
     let addresses = HashMap::<NodeId, SocketAddr>::from([

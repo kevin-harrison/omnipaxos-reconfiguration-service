@@ -1,97 +1,93 @@
 use crate::kv::{KVSnapshot, KeyValue};
-use omnipaxos_core::{
-    messages::Message,
-    util::{ConfigurationId, NodeId},
-};
-use serde::{Deserialize, Serialize};
 
-use self::log_migration::{LogMigrationMessage, LogMigrationMsg};
+use self::log_migration::LogMigrationMessage;
 
 pub mod log_migration {
-    use omnipaxos_core::{
-        omni_paxos::ReconfigurationRequest,
-        storage::{Entry, Snapshot, SnapshotType, StopSign},
-        util::NodeId,
-    };
+    use omnipaxos_core::{util::{ConfigurationId, LogEntry, NodeId}, omni_paxos::ReconfigurationRequest};
     use serde::{Deserialize, Serialize};
     use std::fmt::Debug;
 
+    use crate::kv::{KVSnapshot, KeyValue};
+
     // The leader send this to inform new servers to start pulling logs from `des_servers`
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct LogPullStart {
-        pub configuration_id: u32,
+    pub struct PullStart {
         pub des_servers: Vec<NodeId>,
-        pub decided_idx: u64,
+        pub decided_idx: u64, // not include the `<StopSign>`
     }
 
-    // New servers ask for the log[idx_from..idx_to]
+    // New servers ask for the log[idx_from..idx_to)
     #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-    pub struct LogPullRequest {
-        pub configuration_id: u32,
-        pub idx_from: u64,
-        pub idx_to: u64,
+    pub struct PullRequest {
+        pub from_idx: u64,
+        pub to_idx: u64,
     }
 
     // Old servers respond to `LogPullRequest` from new servers
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct LogPullResponse<T, S>
-    where
-        T: Entry,
-        S: Snapshot<T>,
-    {
-        pub configuration_id: u32,
-        pub idx_from: u64,
-        pub idx_to: u64,
-        pub logs: Vec<T>,
-        pub snapshots: Option<SnapshotType<T, S>>,
+    pub struct PullResponse {
+        pub from_idx: u64,
+        pub to_idx: u64,
+        //pub logs: Vec<LogEntry<KeyValue, KVSnapshot>>,
     }
 
     // New servers tell the leader that they had finished syncing logs
     #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-    pub struct LogPullDone {
-        pub configuration_id: u32,
+    pub struct PullOneDone {
         pub get_idx: u64, // how many entries of log does the server get
     }
 
-    /*
-    // The leader tells all the servers to abondon OmniPaxos instances and start a new one.
-    #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-    pub struct StartNewConfiguration{
-        pub configuration_id: u32,
-    }
-    */
-
     #[allow(missing_docs)]
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub enum LogMigrationMsg<T, S>
-    where
-        T: Entry,
-        S: Snapshot<T>,
-    {
+    pub enum LogMigrationMsg {
         #[allow(missing_docs)]
-        LogPullStart(LogPullStart),
-        LogPullRequest(LogPullRequest),
-        LogPullResponse(LogPullResponse<T, S>),
-        LogPullDone(LogPullDone),
-        StartNewConfiguration(ReconfigurationRequest),
+        LogPullStart(PullStart),
+        LogPullRequest(PullRequest),
+        LogPullResponse(PullResponse),
+        LogPullOneDone(PullOneDone),
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct LogMigrationMessage<T, S>
-    where
-        T: Entry,
-        S: Snapshot<T>,
-    {
+    pub struct LogMigrationMessage {
+        pub configuration_id: ConfigurationId,
         pub from: NodeId,
         pub to: NodeId,
-        pub msg: LogMigrationMsg<T, S>,
+        pub msg: LogMigrationMsg,
+    }
+
+    impl LogMigrationMessage {
+        pub fn get_receiver(&self) -> NodeId {
+            self.to
+        }
+        pub fn get_sender(&self) -> NodeId {
+            self.from
+        }
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+use omnipaxos_core::{
+    messages::Message,
+    omni_paxos::ReconfigurationRequest,
+    util::{ConfigurationId, NodeId},
+};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum NodeMessage {
+    // router messages
     Hello(NodeId),
-    LogMigrationMessage(LogMigrationMsg<KeyValue, KVSnapshot>),
+
+    // server messages
     OmniPaxosMessage(ConfigurationId, Message<KeyValue, KVSnapshot>),
-    Append(ConfigurationId, KeyValue),
+    LogMigrateMessage(LogMigrationMessage),
+
+    // client messages
+    ClientMessage(ClientMsg),
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ClientMsg {
+    Append(ConfigurationId, KeyValue),
+    Reconfigure(ReconfigurationRequest),
+}
+
