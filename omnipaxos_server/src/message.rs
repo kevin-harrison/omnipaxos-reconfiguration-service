@@ -16,13 +16,14 @@ pub mod log_migration {
     pub struct LogPullStart {
         pub configuration_id: u32,
         pub des_servers: Vec<NodeId>,
-        pub decided_idx: u64
+        pub decided_idx: u64, // not include the `<StopSign>`
     }
 
-    // New servers ask for the log[idx_from..idx_to]
+    // New servers ask for the log[idx_from..idx_to)
     #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
     pub struct LogPullRequest {
         pub configuration_id: u32,
+        pub src_server: NodeId;
         pub idx_from: u64,
         pub idx_to: u64,
     }
@@ -35,6 +36,7 @@ pub mod log_migration {
         S: Snapshot<T>,
     {
         pub configuration_id: u32,
+        pub src_server: NodeId;
         pub idx_from: u64,
         pub idx_to: u64,
         pub logs: Vec<T>,
