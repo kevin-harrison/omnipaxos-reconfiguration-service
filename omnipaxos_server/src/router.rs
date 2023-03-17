@@ -50,6 +50,13 @@ impl Router {
         })
     }
 
+    // Adds an new node address. Overwites and disconnects the node if
+    // it already had a known address.
+    pub fn add_address(&mut self, node: NodeId, address: SocketAddr) {
+        self.nodes.remove(&node);
+        self.node_addresses.insert(node, address);
+    }
+
     pub async fn send_message(&mut self, node: NodeId, msg: NodeMessage) -> Result<(), Error> {
         if let Some(connection) = self.nodes.get_mut(&node) {
             connection.send(msg).await?;
@@ -77,6 +84,7 @@ impl Router {
         }
         Err(anyhow!("No known address for node {}", node))
     }
+
 }
 
 impl Stream for Router {
@@ -114,7 +122,10 @@ impl Stream for Router {
                         self_mut.nodes.insert(id, pending);
                     }
                     Some(Ok(NodeMessage::Append(cid, kv))) => {
-                        self_mut.buffer.push_back(NodeMessage::Append(cid, kv))
+                        self_mut.buffer.push_back(NodeMessage::Append(cid, kv));
+                    }
+                    Some(Ok(NodeMessage::LogMigrationMessage(msg))) => {
+                        self_mut.buffer.push_back(NodeMessage::LogMigrationMessage(msg));
                     }
                     Some(Ok(msg)) => warn!("Received unknown message during handshake: {:?}", msg),
                     Some(Err(err)) => error!("Error checking for new requests: {:?}", err),
