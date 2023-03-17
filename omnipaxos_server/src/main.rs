@@ -13,8 +13,10 @@ use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
 use crate::{
     server::OmniPaxosServer,
     router::Router,
+    kv::{KVSnapshot, KeyValue},
 };
 use omnipaxos_core::{omni_paxos::OmniPaxosConfig, util::NodeId};
+use omnipaxos_storage::persistent_storage::PersistentStorage;
 use hocon::HoconLoader;
 
 mod kv;
@@ -61,6 +63,6 @@ pub async fn main() {
     }
 
     // Start server
-    let mut server = OmniPaxosServer::new(id, router, configs);
+    let mut server = OmniPaxosServer::<KeyValue, KVSnapshot, PersistentStorage<KeyValue, KVSnapshot>>::new(id, router, configs);
     server.run().await;
 }
