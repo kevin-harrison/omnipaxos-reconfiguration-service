@@ -43,7 +43,7 @@ pub async fn main() {
     ]);
 
     let listen_address = addresses.get(&id).unwrap().clone();
-    let router= Router::<KeyValue, KVSnapshot>::new(id, listen_address, addresses.clone())
+    let router = Router::new(id, listen_address, addresses.clone())
         .await
         .unwrap();
 
@@ -66,9 +66,6 @@ pub async fn main() {
     }
 
     // Start server
-    let mut server =
-        OmniPaxosServer::<KeyValue, KVSnapshot, PersistentStorage<KeyValue, KVSnapshot>>::new(
-            id, router, configs,
-        );
+    let mut server = OmniPaxosServer::new(id, router, configs);
     server.run().await;
 }
