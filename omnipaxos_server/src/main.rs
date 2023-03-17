@@ -36,6 +36,8 @@ pub async fn main() {
         (1, SocketAddr::from(([127, 0, 0, 1], 8000))),
         (2, SocketAddr::from(([127, 0, 0, 1], 8001))),
         (3, SocketAddr::from(([127, 0, 0, 1], 8002))),
+        (4, SocketAddr::from(([127, 0, 0, 1], 8003))),
+        (5, SocketAddr::from(([127, 0, 0, 1], 8004))),
     ]);
      
     let listen_address = addresses.get(&id).unwrap().clone();
@@ -59,6 +61,6 @@ pub async fn main() {
     }
 
     // Start server
-    let mut server = OmniPaxosServer::new(router, configs);
+    let mut server = OmniPaxosServer::new(id, router, configs);
     server.run().await;
 }
