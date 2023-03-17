@@ -11,39 +11,28 @@ use tokio_serde::{formats::Cbor, Framed};
 use tokio_util::codec::{Framed as CodecFramed, LengthDelimitedCodec};
 
 use crate::message::NodeMessage;
-use omnipaxos_core::{
-    util::NodeId,
-    storage::{Entry, Snapshot},
-};
+use omnipaxos_core::util::NodeId;
 
 use log::*;
 use std::mem;
 
-type NodeConnection<T, S> = Framed<
+type NodeConnection = Framed<
     CodecFramed<TcpStream, LengthDelimitedCodec>,
-    NodeMessage<T, S>,
-    NodeMessage<T, S>,
-    Cbor<NodeMessage<T, S>, NodeMessage<T, S>>,
+    NodeMessage,
+    NodeMessage,
+    Cbor<NodeMessage, NodeMessage>,
 >;
 
-pub struct Router<T, S> 
-where
-    T: Entry,
-    S: Snapshot<T>,
-{
+pub struct Router {
     id: NodeId,
     listener: TcpListener,
-    nodes: HashMap<NodeId, NodeConnection<T, S>>,
+    nodes: HashMap<NodeId, NodeConnection>,
     node_addresses: HashMap<NodeId, SocketAddr>,
-    pending_nodes: Vec<NodeConnection<T, S>>,
-    buffer: VecDeque<NodeMessage<T, S>>,
+    pending_nodes: Vec<NodeConnection>,
+    buffer: VecDeque<NodeMessage>,
 }
 
-impl<T, S> Router<T, S>
-where
-    T: Entry + serde::Serialize + std::marker::Unpin,
-    S: Snapshot<T> + serde::Serialize + std::marker::Unpin,
-{
+impl Router {
     pub async fn new(
         id: NodeId,
         listen_address: SocketAddr,
@@ -68,7 +57,7 @@ where
         self.node_addresses.insert(node, address);
     }
 
-    pub async fn send_message(&mut self, node: NodeId, msg: NodeMessage<T, S>) -> Result<(), Error> {
+    pub async fn send_message(&mut self, node: NodeId, msg: NodeMessage) -> Result<(), Error> {
         if let Some(connection) = self.nodes.get_mut(&node) {
             connection.send(msg).await?;
         } else {
@@ -97,12 +86,8 @@ where
     }
 }
 
-impl<T, S> Stream for Router<T, S> 
-where
-    T: Entry + std::marker::Unpin,
-    S: Snapshot<T> + std::marker::Unpin + std::fmt::Debug,
-{
-    type Item = Result<NodeMessage<T, S>, Error>;
+impl Stream for Router {
+    type Item = Result<NodeMessage, Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let self_mut = &mut self.as_mut();
@@ -135,13 +120,13 @@ where
                         self_mut.buffer.push_back(NodeMessage::Hello(id));
                         self_mut.nodes.insert(id, pending);
                     }
-                    Some(Ok(NodeMessage::Append(cid, kv))) => {
-                        self_mut.buffer.push_back(NodeMessage::Append(cid, kv));
+                    Some(Ok(NodeMessage::ClientMessage(msg))) => {
+                        self_mut.buffer.push_back(NodeMessage::ClientMessage(msg));
                     }
-                    Some(Ok(NodeMessage::LogMigrationMessage(msg))) => {
+                    Some(Ok(NodeMessage::LogMigrateMessage(msg))) => {
                         self_mut
                             .buffer
-                            .push_back(NodeMessage::LogMigrationMessage(msg));
+                            .push_back(NodeMessage::LogMigrateMessage(msg));
                     }
                     Some(Ok(msg)) => warn!("Received unknown message during handshake: {:?}", msg),
                     Some(Err(err)) => error!("Error checking for new requests: {:?}", err),

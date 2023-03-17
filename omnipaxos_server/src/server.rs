@@ -21,9 +21,14 @@ use sled::Config;
 use tokio::time;
 
 use crate::{
+    kv::{KVSnapshot, KeyValue},
     message::{
-        client::{self, *},
-        log_migration::{self, *},
+        log_migration::{
+            LogMigrationMsg::{self, *},
+            *,
+        },
+        ClientMessage,
+        ClientMsg::{self, *},
         NodeMessage::{self, *},
     },
     router::Router,
@@ -32,7 +37,7 @@ use crate::{
 
 pub struct LogMigrationState {
     // for new servers
-    pub response_to_receive: u32,
+    pub response_to_receive: u64,
     pub leader: NodeId,
     pub decided_idx: u64, // # of logs to pull
 
@@ -53,28 +58,20 @@ impl Default for LogMigrationState {
     }
 }
 
-pub struct OmniPaxosServer<T, S, B>
-where
-    T: Entry,
-    S: Snapshot<T>,
-    B: Storage<T, S>,
-{
+type OmniPaxosInstance = OmniPaxos<KeyValue, KVSnapshot, PersistentStorage<KeyValue, KVSnapshot>>;
+
+pub struct OmniPaxosServer {
     id: NodeId,
-    router: Router<T, S>,
-    omnipaxos_instances: HashMap<ConfigurationId, Arc<Mutex<OmniPaxos<T, S, B>>>>,
+    router: Router,
+    omnipaxos_instances: HashMap<ConfigurationId, Arc<Mutex<OmniPaxosInstance>>>,
     configs: HashMap<ConfigurationId, OmniPaxosConfig>,
     first_connects: HashMap<NodeId, bool>,
     active_instance: ConfigurationId,
     log_migration_state: LogMigrationState,
 }
 
-impl<T, S, B> OmniPaxosServer<T, S, B>
-where
-    T: Entry,
-    S: Snapshot<T>,
-    B: Storage<T, S>,
-{
-    pub fn new(id: NodeId, router: Router<T, S>, configs: Vec<OmniPaxosConfig>) -> Self {
+impl OmniPaxosServer {
+    pub fn new(id: NodeId, router: Router, configs: Vec<OmniPaxosConfig>) -> Self {
         let mut omnipaxos_instances = HashMap::new();
         let mut config_map = HashMap::new();
         let mut active_instance = 0;
@@ -83,7 +80,7 @@ where
             let config_id = config.configuration_id;
 
             // Create OmniPaxos instance from config
-            let omnipaxos_instance: Arc<Mutex<OmniPaxos<T, S, B>>> = Self.create_instance(&config);
+            let omnipaxos_instance = OmniPaxosServer::create_instance(&config);
             // Check if instance is the active one
             if let None = omnipaxos_instance.lock().unwrap().is_reconfigured() {
                 active_instance = config_id;
@@ -102,9 +99,9 @@ where
             active_instance,
             log_migration_state: LogMigrationState::default(),
         }
-    } 
+    }
 
-    fn handle_incoming_msg(&mut self, in_msg: Result<NodeMessage<T, S>, Error>) {
+    fn handle_incoming_msg(&mut self, in_msg: Result<NodeMessage, Error>) {
         trace!("Receiving: {:?}", in_msg);
         match in_msg {
             // New node connection
@@ -140,25 +137,26 @@ where
                     instance.lock().unwrap().handle_incoming(msg);
                 }
             }
-            Ok(LogMigrationMessage(logMigrationMessage)) => {
-                self.handle_incoming_log_migration_msg(logMigrationMessage);
+            Ok(LogMigrateMessage(log_msg)) => {
+                self.handle_incoming_log_migration_msg(log_msg);
             }
-            Ok(ClientMessage(clientMessage)) => {
-                self.handle_incoming_client_msg(clientMessage);
+            Ok(ClientMessage(client_msg)) => {
+                self.handle_incoming_client_msg(client_msg);
             }
             Ok(_) => unimplemented!(),
             Err(err) => warn!("Could not deserialize message: {}", err),
         }
     }
 
-    fn handle_incoming_client_msg(&mut self, client_message: client::ClientMessage<T>) {
-        let client::ClientMessage {
+    fn handle_incoming_client_msg(&mut self, client_message: ClientMessage) {
+        let ClientMessage {
             configuration_id,
             msg,
         } = client_message;
+
         match msg {
             // Append to log of corrrect instance
-            Append { entry } => {
+            Append(kv) => {
                 debug!("Got an append request from a client");
                 let append_attempt = self
                     .omnipaxos_instances
@@ -166,13 +164,13 @@ where
                     .unwrap()
                     .lock()
                     .unwrap()
-                    .append(entry);
+                    .append(kv);
                 if let Err(_) = append_attempt {
                     warn!("Append failed");
                 }
             }
             // Reconfiguration request
-            Reconfigure { request } => {
+            Reconfigure(request) => {
                 debug!("Got a reconfig request from a client");
                 self.omnipaxos_instances
                     .get(&self.active_instance)
@@ -186,19 +184,20 @@ where
 
     async fn handle_incoming_log_migration_msg(
         &mut self,
-        log_migration_message: log_migration::LogMigrationMessage<T, S>,
+        log_migration_message: LogMigrationMessage,
     ) {
-        let log_migration::LogMigrationMessage {
+        let LogMigrationMessage {
             configuration_id,
             from,
             to,
             msg,
         } = log_migration_message;
+
         match msg {
-            LogPullStart {
+            LogPullStart(PullStart {
                 des_servers,
                 decided_idx,
-            } => {
+            }) => {
                 self.log_migration_state.response_to_receive =
                     (decided_idx + MIGRATTION_BATCH_SIZE - 1) / MIGRATTION_BATCH_SIZE;
                 self.log_migration_state.leader = from;
@@ -210,18 +209,18 @@ where
                         break;
                     }
                     let batch_size = cmp::min(MIGRATTION_BATCH_SIZE, decided_idx - cur_idx);
-                    let out_msg = log_migration::LogMigrationMessage::<T, S> {
+                    let out_msg = LogMigrationMessage {
                         configuration_id,
                         from: self.id,
                         to: des_server,
-                        msg: LogPullRequest {
+                        msg: LogPullRequest(PullRequest {
                             from_idx: cur_idx,
                             to_idx: cur_idx + batch_size,
-                        },
+                        }),
                     };
                     match self
                         .router
-                        .send_message(des_server, LogMigrationMessage(out_msg))
+                        .send_message(des_server, LogMigrateMessage(out_msg))
                         .await
                     {
                         Err(err) => trace!(
@@ -234,7 +233,7 @@ where
                     cur_idx += batch_size;
                 }
             }
-            LogPullRequest { from_idx, to_idx } => {
+            LogPullRequest(PullRequest { from_idx, to_idx }) => {
                 // get KVs
                 let logs = self
                     .omnipaxos_instances
@@ -247,19 +246,19 @@ where
                 // extract [from_idx..to_idx)
                 if let Some(logs_vec) = logs {
                     let logs_vec_slice = logs_vec[..(to_idx - from_idx)];
-                    let out_msg = log_migration::LogMigrationMessage::<T, S> {
+                    let out_msg = LogMigrationMessage {
                         configuration_id,
                         from: self.id,
                         to: from,
-                        msg: LogPullResponse::<T, S> {
+                        msg: LogPullResponse(PullResponse {
                             from_idx,
                             to_idx,
                             logs: logs_vec_slice,
-                        },
+                        }),
                     };
                     match self
                         .router
-                        .send_message(from, LogMigrationMessage(out_msg))
+                        .send_message(from, LogMigrateMessage(out_msg))
                         .await
                     {
                         Err(err) => trace!(
@@ -271,35 +270,35 @@ where
                     }
                 }
             }
-            LogPullResponse::<T, S> {
+            LogPullResponse(PullResponse {
                 from_idx,
                 to_idx,
                 logs,
-            } => {
+            }) => {
                 for log_entry in logs {
                     self.omnipaxos_instances
                         .get(&configuration_id)
                         .unwrap()
                         .lock()
                         .unwrap()
-                        .append(log_entry)
+                        .append(log_entry) // Should only append if its a decided entry no?
                         .expect("Failed on append");
                 }
                 self.log_migration_state.response_to_receive -= 1;
 
                 //
                 if self.log_migration_state.response_to_receive == 0 {
-                    let out_msg = log_migration::LogMigrationMessage::<T, S> {
+                    let out_msg = LogMigrationMessage {
                         configuration_id,
                         from: self.id,
                         to: self.log_migration_state.leader,
-                        msg: LogPullOneDone {
+                        msg: LogPullOneDone(PullOneDone {
                             get_idx: self.log_migration_state.decided_idx,
-                        },
+                        }),
                     };
                     match self
                         .router
-                        .send_message(from, LogMigrationMessage(out_msg))
+                        .send_message(from, LogMigrateMessage(out_msg))
                         .await
                     {
                         Err(err) => trace!(
@@ -313,7 +312,7 @@ where
                     self.log_migration_state = LogMigrationState::default();
                 }
             }
-            LogPullOneDone { get_idx } => {
+            LogPullOneDone(PullOneDone { get_idx }) => {
                 self.log_migration_state.num_new_servers -= 1;
 
                 //
@@ -325,17 +324,17 @@ where
                     // peers.push(self.id);
 
                     for new_servers in self.log_migration_state.new_servers {
-                        let out_msg = log_migration::LogMigrationMessage::<T, S> {
+                        let out_msg = LogMigrationMessage {
                             configuration_id: configuration_id + 1, // new configuration!!
                             from: self.id,
                             to: self.log_migration_state.leader,
-                            msg: StartNewConfiguration {
+                            msg: StartNewConfiguration(NewConfiguration {
                                 new_servers: self.log_migration_state.new_servers,
-                            },
+                            }),
                         };
                         match self
                             .router
-                            .send_message(from, LogMigrationMessage(out_msg))
+                            .send_message(from, LogMigrateMessage(out_msg))
                             .await
                         {
                             Err(err) => trace!(
@@ -350,7 +349,7 @@ where
                     self.log_migration_state = LogMigrationState::default();
                 }
             }
-            StartNewConfiguration { new_servers } => {
+            StartNewConfiguration(NewConfiguration { new_servers }) => {
                 // Create and save new config file
                 let config_id = configuration_id;
                 let peers = new_servers
@@ -384,7 +383,7 @@ where
                     .hocon()
                     .unwrap();
                 let config = OmniPaxosConfig::with_hocon(&cfg);
-                let new_instance = Self.create_instance(&config);
+                let new_instance = OmniPaxosServer::create_instance(&config);
                 self.omnipaxos_instances.insert(config_id, new_instance);
 
                 // New instance is now active
@@ -479,39 +478,37 @@ where
             }
 
             // TODO!! if itself is leader, send LogPullStart to all the new servers
-            let old_servers = self.configs.get(&self.active_instance).unwrap().peers;
-            old_servers.append(self.id);
+            let mut old_servers = self.configs.get(&self.active_instance).unwrap().peers.clone();
+            old_servers.push(self.id);
 
             self.log_migration_state.new_servers = stopsign.nodes; // all the servers in the next configuration
 
-            let new_servers_to_pull_log: Vec<u64> = self
+            let new_servers_to_pull_log = self
                 .log_migration_state
                 .new_servers
                 .iter()
-                .filter(|&id| !old_servers.contains(id))
-                //.cloned()
-                .collect();
+                .filter(|&id| !old_servers.contains(id));
 
             for new_server_to_pull_log in new_servers_to_pull_log {
-                let out_msg = log_migration::LogMigrationMessage::<T, S> {
+                let out_msg = LogMigrationMessage {
                     configuration_id: stopsign.config_id - 1, // new configuration!!
                     from: self.id,
-                    to: new_server_to_pull_log,
-                    msg: LogPullStart {
-                        des_servers: old_servers,
+                    to: *new_server_to_pull_log,
+                    msg: LogPullStart(PullStart {
+                        des_servers: old_servers.clone(),
                         decided_idx,
-                    },
+                    }),
                 };
 
                 match self
                     .router
-                    .send_message(out_msg.get_receiver(), LogMigrationMessage(out_msg))
+                    .send_message(out_msg.get_receiver(), LogMigrateMessage(out_msg))
                     .await
                 {
                     Err(err) => trace!(
                         "Error sending LogPullStart from {} to {}",
                         self.id,
-                        out_msg.get_receiver()
+                        new_server_to_pull_log
                     ),
                     _ => {}
                 }
@@ -540,7 +537,7 @@ where
         }
     }
 
-    fn create_instance(config: &OmniPaxosConfig) -> Arc<Mutex<OmniPaxos<T, S, B>>> {
+    fn create_instance(config: &OmniPaxosConfig) -> Arc<Mutex<OmniPaxosInstance>> {
         // Persistent Log config
         let log_path = format!(
             "{}node{}/config_{}",
