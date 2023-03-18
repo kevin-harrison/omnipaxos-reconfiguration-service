@@ -38,18 +38,17 @@ pub async fn main() {
     // Create OmniPaxos configs
     let mut configs: Vec<OmniPaxosConfig> = vec![];
     let config_dir = format!("config/node{}", id);
-    for entry in Path::new(&config_dir)
-        .read_dir()
-        .expect("Config directory not found")
-    {
-        if let Ok(entry) = entry {
-            let cfg = HoconLoader::new()
-                .load_file(entry.path())
-                .expect("Failed to load hocon file")
-                .hocon()
-                .unwrap();
-            let config = OmniPaxosConfig::with_hocon(&cfg);
-            configs.push(config);
+    if let Ok(config_files) = Path::new(&config_dir).read_dir() {
+        for entry in config_files {
+            if let Ok(entry) = entry {
+                let cfg = HoconLoader::new()
+                    .load_file(entry.path())
+                    .expect("Failed to load hocon file")
+                    .hocon()
+                    .unwrap();
+                let config = OmniPaxosConfig::with_hocon(&cfg);
+                configs.push(config);
+            }
         }
     }
 

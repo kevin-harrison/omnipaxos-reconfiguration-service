@@ -1,45 +1,24 @@
 # omnipaxos-reconfiguration-service
 
-## Ideas
-### Network Layer
- - Network layer handles to nodes
- - async runtime for handling messages to/from other nodes (also handle incoming requests from clients)
+Our project is an implementation of the project described in the project info as "2.2.1 Service layer for reconfiguration". We created a fault-tolerant server which maintains an Omnipaxos log with a cluster of similar servers (nodes). The cluster is able to be reconfigured by adding or removing nodes from the cluster. We also created a bare bones client which serves to give commands to the server such as appending to the log and initiating a reconfiguration.
 
-### Log migration
- - Service Layer (what we have to implement)
-    - if `<StopSign>` is detected in a server
-       - if the server is the leader
-          - create new servers (OmniPaxos) if there are some in the new config
-             - metadata for the new servers
-                - a list of old servers from which they can pull the log (specfied in `<StopSign>` meta data)
-                - the length of log with `<StopSign>` excluded
-                - network things
-          - on `LogPullDone` for all new servers
-             - send `StartNewConfiguration` to all servers
-       - for new servers
-          - once created, send `LogPullRequest` to old servers which they can pull log from
-             - **TBD**
-                - how to pull in the most efficient ways
-                   - pull a constant number of log from each servers per request?
-                - what if some old servers is unresponsive?
-          - after catching up, send `LogPullDone` to the leader
-       - for all old servers (followers, leader, and new servers)
-          - On `LogPullRequest`
-             - send back log segment requested
-          - On `StartNewConfiguration`
-             - create a new OmniPaxos if self is included in the new configuration
- - Log Replication Layer (what library has already done)
-    - omnipaxos instance can call `reconfigure()` where it create a `ReconfigurationRequest` 
-       - if it's a leader, it will try to propose it 
-       - if it's a follower, it will forward it to its leader
-    - `ReconfigurationRequest`
-       - a vector of all servers in the new configuration
-       - cid
-       - meta data
-          - all new servers with a list of old servers from which they can pull the log
-             - 2d array I guess
+# How to run
+The following commands assume that the repo root is your working directory.
 
-### Correctness of the proposed log migration scheme
- - cannot decide new entry inbetween configurations (where Raft can)
- - parrallel migration between servers
+## Running a server with debug info:
+```console
+RUST_LOG=error,omnipaxos_server=debug cargo run -p omnipaxos_server <server's-node-id>
+```
+Note that the first configuration of nodes require configuration files in the `/config/` folder to start. To create files resulting in a simple first configuration you can run `clean.sh`.
 
+## Running client requests:
+```console
+cargo run -p omnipaxos_client append 1 2 a 55
+```
+Sends a request to node with id `1` to append `KeyValue { key=a value=55}` to configuration with id `2`.
+
+```console
+cargo run -p omnipaxos_client reconfig 5 1 2 3
+```
+Sends a request to node with id `5` to propose a reconfiguration with a new cluster consisting of only nodes with id `1`, `2`, and `3`.
+Note: only nodes 1-5 have IP addresses defined (in both the server and client's main.rs).
