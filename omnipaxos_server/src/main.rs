@@ -1,23 +1,11 @@
 use env_logger;
 use std::{collections::HashMap, env, net::SocketAddr, path::Path};
-
-/*
-use futures::prelude::*;
-use router::Router;
-use serde_json::Value;
-use tokio::net::TcpListener;
-use tokio_serde::formats::*;
-use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
-*/
-
+use hocon::HoconLoader;
+use omnipaxos_core::{omni_paxos::OmniPaxosConfig, util::NodeId};
 use crate::{
-    kv::{KVSnapshot, KeyValue},
     router::Router,
     server::OmniPaxosServer,
 };
-use hocon::HoconLoader;
-use omnipaxos_core::{omni_paxos::OmniPaxosConfig, util::NodeId};
-use omnipaxos_storage::persistent_storage::PersistentStorage;
 
 mod kv;
 mod message;

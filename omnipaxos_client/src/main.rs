@@ -15,9 +15,8 @@ mod message;
 use crate::{
     kv::KeyValue,
     message::{
-        log_migration::LogMigrationMsg::{self, *},
         NodeMessage::{self, *},
-        ClientMsg::{self, *}
+        ClientMsg::*
     },
 };
 
@@ -59,10 +58,10 @@ pub async fn main() {
 }
 
 async fn append(node: NodeId, config: ConfigurationId, key: String, value: u64) {
-    // Create message
+    // Create append request message
     let kv = KeyValue { key, value };
 
-    // Bind a server socket
+    // Connect to server
     let addresses = HashMap::<NodeId, SocketAddr>::from([
         (1, SocketAddr::from(([127, 0, 0, 1], 8000))),
         (2, SocketAddr::from(([127, 0, 0, 1], 8001))),
@@ -77,6 +76,7 @@ async fn append(node: NodeId, config: ConfigurationId, key: String, value: u64) 
     let length_delimited = CodecFramed::new(tcp_stream, LengthDelimitedCodec::new());
     let mut framed: NodeConnection = Framed::new(length_delimited, Cbor::default());
 
+    // Send message
     match framed.send(ClientMessage(Append(config, kv))).await {
         Ok(_) => println!("Message sent"),
         Err(err) => println!("Failed to end message: {}", err),
@@ -84,12 +84,12 @@ async fn append(node: NodeId, config: ConfigurationId, key: String, value: u64) 
 }
 
 async fn reconfigure(node: NodeId, nodes: Vec<NodeId>) {
-    // Create message
+    // Create reconfiguration request message
     let metadata = bincode::serialize(&nodes).unwrap(); 
     let request = ReconfigurationRequest::with(nodes, None);
     let message = ClientMessage(Reconfigure(request));
 
-    // Bind a server socket
+    // Connect to server
     let addresses = HashMap::<NodeId, SocketAddr>::from([
         (1, SocketAddr::from(([127, 0, 0, 1], 8000))),
         (2, SocketAddr::from(([127, 0, 0, 1], 8001))),
@@ -104,6 +104,7 @@ async fn reconfigure(node: NodeId, nodes: Vec<NodeId>) {
     let length_delimited = CodecFramed::new(tcp_stream, LengthDelimitedCodec::new());
     let mut framed: NodeConnection = Framed::new(length_delimited, Cbor::default());
 
+    // Send message
     match framed.send(message).await {
         Ok(_) => println!("Message sent"),
         Err(err) => println!("Failed to end message: {}", err),

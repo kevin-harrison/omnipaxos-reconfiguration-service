@@ -3,32 +3,31 @@ use crate::kv::{KVSnapshot, KeyValue};
 use self::log_migration::LogMigrationMessage;
 
 pub mod log_migration {
-    use omnipaxos_core::{util::{ConfigurationId, LogEntry, NodeId}, omni_paxos::ReconfigurationRequest};
+    use omnipaxos_core::util::{ConfigurationId, NodeId};
     use serde::{Deserialize, Serialize};
     use std::fmt::Debug;
 
-    use crate::kv::{KVSnapshot, KeyValue};
+    use crate::kv::KVSnapshot;
 
     // The leader send this to inform new servers to start pulling logs from `des_servers`
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct PullStart {
-        pub des_servers: Vec<NodeId>,
-        pub decided_idx: u64, // not include the `<StopSign>`
+        pub config_nodes: Vec<NodeId>,
+        pub pull_from: Vec<NodeId>,
     }
 
     // New servers ask for the log[idx_from..idx_to)
     #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
     pub struct PullRequest {
-        pub from_idx: u64,
-        pub to_idx: u64,
+        pub chunk_index: usize,
+        pub num_chunks: usize 
     }
 
     // Old servers respond to `LogPullRequest` from new servers
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct PullResponse {
-        pub from_idx: u64,
-        pub to_idx: u64,
-        //pub logs: Vec<LogEntry<KeyValue, KVSnapshot>>,
+        pub chunk_index: usize,
+        pub snapshot_chunk: KVSnapshot,
     }
 
     // New servers tell the leader that they had finished syncing logs
@@ -36,7 +35,7 @@ pub mod log_migration {
     pub struct PullOneDone {
         pub get_idx: u64, // how many entries of log does the server get
     }
-
+ 
     #[allow(missing_docs)]
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub enum LogMigrationMsg {

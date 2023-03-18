@@ -11,7 +11,10 @@ use tokio_serde::{formats::Cbor, Framed};
 use tokio_util::codec::{Framed as CodecFramed, LengthDelimitedCodec};
 
 use crate::message::NodeMessage;
-use omnipaxos_core::util::NodeId;
+use omnipaxos_core::{
+    util::NodeId,
+    messages::Message,
+};
 
 use log::*;
 use std::mem;
@@ -62,13 +65,20 @@ impl Router {
             connection.send(msg).await?;
         } else {
             // No connection to node so if heartbeat message try to reconnect then send
-            if let NodeMessage::OmniPaxosMessage(_, omnipaxos_core::messages::Message::BLE(_)) = msg
+            if let NodeMessage::OmniPaxosMessage(_, Message::BLE(_)) = msg
             {
                 trace!("Trying to reconnect to node");
                 self.add_node(node).await?;
                 self.nodes.get_mut(&node).unwrap().send(msg).await?;
             }
+            else if let NodeMessage::LogMigrateMessage(_) = msg
+            {
+                trace!("Trying to reconnect to node");
+                self.add_node(node).await?;
+                self.nodes.get_mut(&node).unwrap().send(msg).await?;
+            } else {
             return Err(anyhow!("Node `{}` not connected!", node));
+            }
         }
         Ok(())
     }
