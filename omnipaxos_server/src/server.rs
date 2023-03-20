@@ -354,6 +354,7 @@ impl OmniPaxosServer {
             let config_id = stopsign.config_id;
             let next_nodes: Vec<NodeId> = stopsign.nodes.clone();
             let peers: Vec<NodeId> = stopsign.nodes
+                .clone()
                 .into_iter()
                 .filter(|&id| id != self.id)
                 .collect();
@@ -396,22 +397,30 @@ impl OmniPaxosServer {
             // Identify new servers
             let mut old_servers = self.configs.get(&prev_instance).unwrap().peers.clone();
             old_servers.push(self.id);
-            let new_servers = peers 
-                .iter()
-                .filter(|&id| !old_servers.contains(id));
+            let new_servers: Vec<NodeId> = stopsign.nodes
+                .clone()
+                .into_iter()
+                .filter(|&id| !old_servers.contains(&id))
+                .collect();
 
             // Tell new servers to request logs
             for new_server in new_servers {
+                let pull_from: Vec<NodeId> = if let Some(metadata_vec) = stopsign.metadata.clone() {
+                    bincode::deserialize(&metadata_vec[..]).unwrap()
+                } else {
+                    next_nodes.clone().into_iter().filter(|&id| id != new_server).collect()
+                };
+
                 let out_msg = LogMigrationMessage {
                     configuration_id: stopsign.config_id,
                     from: self.id,
-                    to: *new_server,
+                    to: new_server,
                     msg: LogPullStart(PullStart {
                         config_nodes: next_nodes.clone(),
-                        pull_from: next_nodes.clone().into_iter().filter(|&id| id != *new_server).collect(), // TODO: Get pull_from from SS metadata
+                        pull_from: pull_from,
                     }),
                 };
-                debug!("Sending Pull start to {}: {:?}", *new_server, out_msg);
+                debug!("Sending Pull start to {}: {:?}", new_server, out_msg);
                 let msg_sent = self.router.send_message(out_msg.get_receiver(), LogMigrateMessage(out_msg)).await;
                 if let Err(err) = msg_sent {
                     error!("Error sending LogPullStart from {} to {}: {:?}", self.id, new_server, err);
